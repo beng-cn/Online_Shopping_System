@@ -1,7 +1,7 @@
 package mysql
 
 import (
-	"backend/internal/model/dto/request" // ✅ 必须导入request包
+	"backend/internal/model/dto/request"
 	"backend/internal/model/entity"
 	"backend/internal/pkg/errors"
 
@@ -27,7 +27,6 @@ type ProductRepository interface {
 	UpdateSales(id uint, sales int) error
 	GetDB() *gorm.DB
 	BatchUpdateSales(stats []SalesStat) error
-	// ✅ 新的方法签名（接收一个req对象）
 	ListPage(req *request.ProductListRequest) ([]*entity.Product, int64, error)
 }
 
@@ -125,7 +124,7 @@ func (r *productRepository) ListHotProductsBySales(limit int) ([]*entity.Product
 	return products, nil
 }
 
-// IncreaseSales 原子增加商品销量（使用SQL表达式保证并发安全）
+// IncreaseSales 原子增加商品销量
 func (r *productRepository) IncreaseSales(id uint, quantity int) error {
 	result := r.db.Model(&entity.Product{}).
 		Where("id = ?", id).
@@ -164,7 +163,7 @@ func (r *productRepository) GetDB() *gorm.DB {
 	return r.db
 }
 
-// BatchUpdateSales 批量更新商品销量（性能比逐个更新提升10倍以上）
+// BatchUpdateSales 批量更新商品销量
 func (r *productRepository) BatchUpdateSales(stats []SalesStat) error {
 	if len(stats) == 0 {
 		return nil
@@ -184,7 +183,7 @@ func (r *productRepository) BatchUpdateSales(stats []SalesStat) error {
 	})
 }
 
-// ListPage 分页查询商品列表（支持复杂筛选和排序）
+// ListPage 分页查询商品列表
 func (r *productRepository) ListPage(req *request.ProductListRequest) ([]*entity.Product, int64, error) {
 	var products []*entity.Product
 	var total int64

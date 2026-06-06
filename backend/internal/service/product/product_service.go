@@ -15,7 +15,6 @@ type ProductService interface {
 	UpdateProduct(id uint, req *request.UpdateProductRequest) error
 	DeleteProduct(id uint) error
 	GetProductByID(id uint) (*response.ProductResponse, error)
-	// ✅ 新的方法签名（接收一个req对象）
 	GetProductList(req *request.ProductListRequest) (*response.PageResponse, error)
 	WarmUpHotProducts(limit int) error
 	CalibrateAllSales() error
