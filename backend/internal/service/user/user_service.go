@@ -17,9 +17,9 @@ type UserService interface {
 	Login(req *request.LoginRequest) (*response.LoginResponse, error)
 	UpdateUserInfo(userID uint, req *request.UpdateUserInfoRequest) error
 	GetUserInfo(userID uint) (*response.UserResponse, error)
-	ListUsers(pageNum, pageSize int, keyword string) (*response.UserListResponse, error)
 	UpdateUserStatus(id uint, status int) error
 	DeleteUser(id uint) error
+	ListUsers(pageNum int, pageSize int, keyword string) (*response.PageResponse, error)
 }
 
 type userService struct {
@@ -164,18 +164,18 @@ func (s *userService) GetUserInfo(userID uint) (*response.UserResponse, error) {
 	}, nil
 }
 
-func (s *userService) ListUsers(pageNum, pageSize int, keyword string) (*response.UserListResponse, error) {
-	// 设置默认分页参数
+func (s *userService) ListUsers(pageNum int, pageSize int, keyword string) (*response.PageResponse, error) {
+	// 参数校验和默认值处理
 	if pageNum <= 0 {
 		pageNum = 1
 	}
-	if pageSize <= 0 {
+	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 10
 	}
 
 	users, total, err := s.userRepo.List(pageNum, pageSize, keyword)
 	if err != nil {
-		return nil, errors.Wrap(err, "查询用户列表失败")
+		return nil, err
 	}
 
 	// 转换为响应DTO
@@ -193,10 +193,8 @@ func (s *userService) ListUsers(pageNum, pageSize int, keyword string) (*respons
 		})
 	}
 
-	return &response.UserListResponse{
-		List:  userList,
-		Total: total,
-	}, nil
+	// 返回统一分页响应
+	return response.NewPageResponse(userList, total, pageNum, pageSize), nil
 }
 
 func (s *userService) UpdateUserStatus(id uint, status int) error {

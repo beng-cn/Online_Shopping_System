@@ -1,9 +1,11 @@
 package product
 
 import (
+	"backend/internal/model/dto/request" // ✅ 新增：导入request包
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/response"
 	"backend/internal/service/product"
+	"log" // ✅ 新增：导入log包用于调试
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -17,21 +19,31 @@ func NewProductController(productService product.ProductService) *ProductControl
 	return &ProductController{productService: productService}
 }
 
-// 获取商品列表
+// GetProductList 分页获取商品列表（POST版本，支持JSON请求体）
 func (c *ProductController) GetProductList(ctx *gin.Context) {
-	keyword := ctx.Query("keyword")
-	categoryID := ctx.Query("category_id")
+	var req request.ProductListRequest
 
-	resp, err := c.productService.GetProductList(keyword, categoryID)
+	// ✅ 从JSON请求体中解析参数
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		log.Printf("❌ 参数绑定失败: %v", err)
+		response.Error(ctx, errors.NewParamError(err.Error()))
+		return
+	}
+
+	// ✅ 打印调试日志，确认参数是否正确接收
+	log.Printf("✅ 收到商品列表查询请求: keyword=%s, category_id=%s, page_num=%d, page_size=%d",
+		req.Keyword, req.CategoryID, req.PageNum, req.PageSize)
+
+	// ✅ 传递完整的req对象给Service层
+	resp, err := c.productService.GetProductList(&req)
 	if err != nil {
 		response.Error(ctx, err)
 		return
 	}
-
 	response.Success(ctx, resp)
 }
 
-// 获取商品详情
+// 获取商品详情（保持不变）
 func (c *ProductController) GetProductDetail(ctx *gin.Context) {
 	idStr := ctx.Param("id")
 	id, err := strconv.Atoi(idStr)

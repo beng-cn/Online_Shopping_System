@@ -65,6 +65,6 @@ func InitApp() (*router.Router, error) {
 	categoryService := category.NewCategoryService(categoryRepository, categoryCache)
 	categoryController := category2.NewCategoryController(categoryService)
 	adminController := admin.NewAdminController(productService, categoryService)
-	routerRouter := router.NewRouter(appConfig, jwtUtil, userController, productController, cartController, orderController, categoryController, adminController)
+	routerRouter := router.NewRouter(appConfig, jwtUtil, userController, productController, cartController, orderController, categoryController, adminController, productService, categoryService)
 	return routerRouter, nil
 }

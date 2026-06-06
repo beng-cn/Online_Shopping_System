@@ -15,6 +15,11 @@ type AppConfig struct {
 	Redis  RedisConfig  `mapstructure:"redis"`
 	JWT    JWTConfig    `mapstructure:"jwt"`
 	Alipay AlipayConfig `mapstructure:"alipay"`
+	Cache  CacheConfig  `mapstructure:"cache"`
+}
+
+type CacheConfig struct {
+	HotProductWarmUpLimit int `mapstructure:"hot_product_warm_up_limit"` // 预热热门商品数量
 }
 
 type ServerConfig struct {

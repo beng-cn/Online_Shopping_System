@@ -81,10 +81,10 @@ func (c *UserController) GetUserInfo(ctx *gin.Context) {
 	response.Success(ctx, resp)
 }
 
-// 获取用户列表（管理员）
+// ListUsers 管理员获取用户列表
 func (c *UserController) ListUsers(ctx *gin.Context) {
-	pageNum, _ := strconv.Atoi(ctx.Query("page_num"))
-	pageSize, _ := strconv.Atoi(ctx.Query("page_size"))
+	pageNum, _ := strconv.Atoi(ctx.DefaultQuery("page_num", "1"))
+	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("page_size", "10"))
 	keyword := ctx.Query("keyword")
 
 	resp, err := c.userService.ListUsers(pageNum, pageSize, keyword)
@@ -92,7 +92,6 @@ func (c *UserController) ListUsers(ctx *gin.Context) {
 		response.Error(ctx, err)
 		return
 	}
-
 	response.Success(ctx, resp)
 }
 

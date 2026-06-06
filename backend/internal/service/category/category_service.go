@@ -7,6 +7,7 @@ import (
 	"backend/internal/pkg/errors"
 	"backend/internal/repository/mysql"
 	"backend/internal/repository/redis"
+	"log"
 )
 
 type CategoryService interface {
@@ -15,6 +16,7 @@ type CategoryService interface {
 	DeleteCategory(id uint) error
 	GetParentCategories() ([]*response.CategoryResponse, error)
 	GetChildCategories(parentID uint) ([]*response.CategoryResponse, error)
+	WarmUpAllCategories() error
 }
 
 type categoryService struct {
@@ -105,42 +107,51 @@ func (s *categoryService) DeleteCategory(id uint) error {
 	return nil
 }
 
+// GetParentCategories 适配缓存降级
 func (s *categoryService) GetParentCategories() ([]*response.CategoryResponse, error) {
-	// 先查缓存
-	categories, err := s.categoryCache.GetParentCategories()
-	if err == nil {
+	categories, _ := s.categoryCache.GetParentCategories()
+	if categories != nil {
 		return convertToCategoryResponseList(categories), nil
 	}
 
-	// 缓存没命中，查数据库
-	categories, err = s.categoryRepo.GetParentCategories()
+	categories, err := s.categoryRepo.GetParentCategories()
 	if err != nil {
 		return nil, err
 	}
 
-	// 写入缓存
-	s.categoryCache.SetParentCategories(categories)
+	go func() {
+		if err := s.categoryCache.SetParentCategories(categories); err != nil {
+			log.Printf("⚠️ 写入父分类缓存失败: %v", err)
+		}
+	}()
 
 	return convertToCategoryResponseList(categories), nil
 }
 
+// GetChildCategories 适配缓存降级
 func (s *categoryService) GetChildCategories(parentID uint) ([]*response.CategoryResponse, error) {
-	// 先查缓存
-	categories, err := s.categoryCache.GetChildCategories(parentID)
-	if err == nil {
+	categories, _ := s.categoryCache.GetChildCategories(parentID)
+	if categories != nil {
 		return convertToCategoryResponseList(categories), nil
 	}
 
-	// 缓存没命中，查数据库
-	categories, err = s.categoryRepo.GetChildCategories(parentID)
+	categories, err := s.categoryRepo.GetChildCategories(parentID)
 	if err != nil {
 		return nil, err
 	}
 
-	// 写入缓存
-	s.categoryCache.SetChildCategories(parentID, categories)
+	go func() {
+		if err := s.categoryCache.SetChildCategories(parentID, categories); err != nil {
+			log.Printf("⚠️ 写入子分类缓存失败: %v", err)
+		}
+	}()
 
 	return convertToCategoryResponseList(categories), nil
+}
+
+// WarmUpAllCategories 暴露预热方法给上层
+func (s *categoryService) WarmUpAllCategories() error {
+	return s.categoryCache.WarmUpAllCategories(s.categoryRepo)
 }
 
 // 转换为响应DTO

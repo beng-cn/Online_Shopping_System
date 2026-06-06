@@ -12,4 +12,5 @@ type ProductResponse struct {
 	Image      string    `json:"image"`
 	Status     int       `json:"status"`
 	CreatedAt  time.Time `json:"created_at"`
+	Sales      int       `json:"sales"`
 }

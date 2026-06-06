@@ -11,6 +11,8 @@ import (
 	"backend/internal/middleware"
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/jwt"
+	"backend/internal/service/category"
+	"backend/internal/service/product"
 	"log"
 	"net/http"
 	"runtime/debug"
@@ -28,6 +30,8 @@ type Router struct {
 	OrderController    *orderCtrl.OrderController
 	CategoryController *categoryCtrl.CategoryController
 	AdminController    *admin.AdminController
+	ProductService     product.ProductService   // 新增服务引用
+	CategoryService    category.CategoryService // 新增服务引用
 }
 
 // 创建路由管理器实例
@@ -40,6 +44,8 @@ func NewRouter(
 	orderController *orderCtrl.OrderController,
 	categoryController *categoryCtrl.CategoryController,
 	adminController *admin.AdminController,
+	productService product.ProductService, // 新增参数
+	categoryService category.CategoryService, // 新增参数
 ) *Router {
 	return &Router{
 		Config:             cfg,
@@ -50,6 +56,8 @@ func NewRouter(
 		OrderController:    orderController,
 		CategoryController: categoryController,
 		AdminController:    adminController,
+		ProductService:     productService,  // 赋值
+		CategoryService:    categoryService, // 赋值
 	}
 }
 
@@ -79,7 +87,7 @@ func (r *Router) Setup() *gin.Engine {
 		// 商品相关
 		productGroup := public.Group("/product")
 		{
-			productGroup.GET("/list", r.ProductController.GetProductList)
+			productGroup.POST("/list", r.ProductController.GetProductList)
 			productGroup.GET("/:id", r.ProductController.GetProductDetail)
 			productGroup.GET("/category/parents", r.CategoryController.GetParentCategories)
 			productGroup.GET("/category/children", r.CategoryController.GetChildCategories)
