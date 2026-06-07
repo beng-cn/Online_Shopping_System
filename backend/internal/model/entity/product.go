@@ -13,6 +13,7 @@ type Product struct {
 	DeletedAt  gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	CategoryID uint           `gorm:"index:idx_product_category_status,priority:1" json:"category_id"`
 	Name       string         `gorm:"not null;index:idx_product_name_like,length:20" json:"name"`
+	Keywords   string         `gorm:"type:varchar(500);comment:'搜索关键词，逗号分隔，如：苹果手机,iphone,手机'" json:"keywords"`
 	Price      float64        `gorm:"not null" json:"price"`
 	Stock      int            `gorm:"not null" json:"stock"`
 	Image      string         `json:"image"`

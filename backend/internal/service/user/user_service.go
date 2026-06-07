@@ -9,7 +9,6 @@ import (
 	"backend/internal/repository/mysql"
 
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm"
 )
 
 type UserService interface {
@@ -20,6 +19,7 @@ type UserService interface {
 	UpdateUserStatus(id uint, status int) error
 	DeleteUser(id uint) error
 	ListUsers(pageNum int, pageSize int, keyword string) (*response.PageResponse, error)
+	ResetUserPassword(id uint, req *request.ResetUserPasswordRequest) error // 管理员重置用户密码
 }
 
 type userService struct {
@@ -40,7 +40,8 @@ func (s *userService) Register(req *request.RegisterRequest) error {
 	if err == nil {
 		return errors.New(errors.CodeUserAlreadyExists, "用户名已存在")
 	}
-	if err != gorm.ErrRecordNotFound {
+	// 非"用户不存在"的错误才是真正的系统错误
+	if !errors.IsCode(err, errors.CodeUserNotFound) {
 		return errors.Wrap(err, "检查用户名失败")
 	}
 
@@ -68,7 +69,7 @@ func (s *userService) Login(req *request.LoginRequest) (*response.LoginResponse,
 	// 查询用户
 	user, err := s.userRepo.GetByUsername(req.Username)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return nil, errors.New(errors.CodeUserNotFound, "用户不存在")
 		}
 		return nil, errors.Wrap(err, "查询用户失败")
@@ -112,7 +113,7 @@ func (s *userService) Login(req *request.LoginRequest) (*response.LoginResponse,
 func (s *userService) UpdateUserInfo(userID uint, req *request.UpdateUserInfoRequest) error {
 	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return errors.New(errors.CodeUserNotFound, "用户不存在")
 		}
 		return errors.Wrap(err, "查询用户失败")
@@ -141,7 +142,7 @@ func (s *userService) GetUserInfo(userID uint) (*response.UserResponse, error) {
 
 	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return nil, errors.New(errors.CodeUserNotFound, "用户不存在")
 		}
 		return nil, errors.Wrap(err, "查询用户信息失败")
@@ -201,7 +202,7 @@ func (s *userService) UpdateUserStatus(id uint, status int) error {
 	// 禁止禁用管理员
 	user, err := s.userRepo.GetByID(id)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return errors.New(errors.CodeUserNotFound, "用户不存在")
 		}
 		return errors.Wrap(err, "查询用户失败")
@@ -217,7 +218,7 @@ func (s *userService) DeleteUser(id uint) error {
 	// 禁止删除管理员
 	user, err := s.userRepo.GetByID(id)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return errors.New(errors.CodeUserNotFound, "用户不存在")
 		}
 		return errors.Wrap(err, "查询用户失败")
@@ -227,4 +228,26 @@ func (s *userService) DeleteUser(id uint) error {
 	}
 
 	return s.userRepo.Delete(id)
+}
+
+// ResetUserPassword 管理员重置用户密码
+// bcrypt 是单向加密，无法解密原文，因此提供重置功能而非查看
+func (s *userService) ResetUserPassword(id uint, req *request.ResetUserPasswordRequest) error {
+	// 查询用户是否存在
+	user, err := s.userRepo.GetByID(id)
+	if err != nil {
+		if errors.IsCode(err, errors.CodeUserNotFound) {
+			return errors.New(errors.CodeUserNotFound, "用户不存在")
+		}
+		return errors.Wrap(err, "查询用户失败")
+	}
+
+	// 加密新密码
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return errors.Wrap(err, "密码加密失败")
+	}
+
+	user.Password = string(hash)
+	return s.userRepo.Update(user)
 }

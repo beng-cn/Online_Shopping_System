@@ -5,6 +5,7 @@ import (
 	"backend/internal/model/dto/response"
 	"backend/internal/model/entity"
 	"backend/internal/pkg/errors"
+	"backend/internal/pkg/keywords"
 	"backend/internal/repository/mysql"
 	"backend/internal/repository/redis"
 	"log"
@@ -18,27 +19,38 @@ type ProductService interface {
 	GetProductList(req *request.ProductListRequest) (*response.PageResponse, error)
 	WarmUpHotProducts(limit int) error
 	CalibrateAllSales() error
+	BatchGenerateKeywords() (int, error) // 为所有关键词为空的商品批量生成
 }
 
 type productService struct {
 	productRepo  mysql.ProductRepository
 	productCache redis.ProductCache
+	categoryRepo mysql.CategoryRepository // 用于自动生成关键词
 }
 
 func NewProductService(
 	productRepo mysql.ProductRepository,
 	productCache redis.ProductCache,
+	categoryRepo mysql.CategoryRepository,
 ) ProductService {
 	return &productService{
 		productRepo:  productRepo,
 		productCache: productCache,
+		categoryRepo: categoryRepo,
 	}
 }
 
 func (s *productService) CreateProduct(req *request.CreateProductRequest) (*response.ProductResponse, error) {
+	// 若未手动指定关键词，则自动从商品名和分类生成
+	keywordsStr := req.Keywords
+	if keywordsStr == "" {
+		keywordsStr = s.autoGenerateKeywords(req.Name, req.CategoryID)
+	}
+
 	product := &entity.Product{
 		CategoryID: req.CategoryID,
 		Name:       req.Name,
+		Keywords:   keywordsStr,
 		Price:      req.Price,
 		Stock:      req.Stock,
 		Image:      req.Image,
@@ -58,6 +70,7 @@ func (s *productService) CreateProduct(req *request.CreateProductRequest) (*resp
 		ID:         product.ID,
 		CategoryID: product.CategoryID,
 		Name:       product.Name,
+		Keywords:   product.Keywords,
 		Price:      product.Price,
 		Stock:      product.Stock,
 		Image:      product.Image,
@@ -75,6 +88,12 @@ func (s *productService) UpdateProduct(id uint, req *request.UpdateProductReques
 
 	product.CategoryID = req.CategoryID
 	product.Name = req.Name
+	// 关键词自动生成：若未手动填写则自动补充
+	if req.Keywords == "" {
+		product.Keywords = s.autoGenerateKeywords(req.Name, req.CategoryID)
+	} else {
+		product.Keywords = req.Keywords
+	}
 	product.Price = req.Price
 	product.Stock = req.Stock
 	product.Image = req.Image
@@ -119,8 +138,13 @@ func (s *productService) GetProductByID(id uint) (*response.ProductResponse, err
 		return nil, err
 	}
 
-	// 异步写入缓存（不阻塞主流程）
+	// 异步写入缓存（不阻塞主流程，已增加 panic 恢复保护）
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ 异步写入商品缓存发生panic: %v", r)
+			}
+		}()
 		if err := s.productCache.SetProduct(product); err != nil {
 			log.Printf("⚠️ 写入商品缓存失败: %v", err)
 		}
@@ -196,12 +220,38 @@ func (s *productService) CalibrateAllSales() error {
 	return nil
 }
 
+// autoGenerateKeywords 根据商品名和分类 ID 自动生成搜索关键词
+// 管理员无需手动填写，系统从品牌映射 + 属性映射 + 分类层级自动推导
+func (s *productService) autoGenerateKeywords(name string, categoryID uint) string {
+	var categoryPath []string
+
+	// 查询分类层级（最多向上查3层）
+	category, err := s.categoryRepo.GetByID(categoryID)
+	if err == nil && category != nil {
+		categoryPath = append(categoryPath, category.Name)
+		// 如果有父分类，也加入
+		if category.ParentID > 0 {
+			parent, err := s.categoryRepo.GetByID(category.ParentID)
+			if err == nil && parent != nil {
+				categoryPath = append([]string{parent.Name}, categoryPath...)
+			}
+		}
+	}
+
+	generated := keywords.Generate(name, categoryPath)
+	if generated != "" {
+		log.Printf("🔑 自动生成关键词: 商品[%s] → %s", name, generated)
+	}
+	return generated
+}
+
 // 转换为响应DTO
 func convertToProductResponse(product *entity.Product) *response.ProductResponse {
 	return &response.ProductResponse{
 		ID:         product.ID,
 		CategoryID: product.CategoryID,
 		Name:       product.Name,
+		Keywords:   product.Keywords,
 		Price:      product.Price,
 		Stock:      product.Stock,
 		Image:      product.Image,
@@ -217,4 +267,31 @@ func convertToProductResponseList(products []*entity.Product) []*response.Produc
 		resp = append(resp, convertToProductResponse(product))
 	}
 	return resp
+}
+
+// BatchGenerateKeywords 为所有关键词为空的存量商品批量自动生成关键词
+// 返回成功生成的数量
+func (s *productService) BatchGenerateKeywords() (int, error) {
+	log.Println("🔑 开始为存量商品批量生成关键词...")
+
+	db := s.productRepo.GetDB()
+	var products []entity.Product
+	if err := db.Where("keywords = '' OR keywords IS NULL").Find(&products).Error; err != nil {
+		return 0, errors.Wrap(err, "查询无关键词商品失败")
+	}
+
+	count := 0
+	for _, product := range products {
+		keywords := s.autoGenerateKeywords(product.Name, product.CategoryID)
+		if keywords != "" {
+			if err := db.Model(&product).Update("keywords", keywords).Error; err != nil {
+				log.Printf("⚠️ 商品ID %d 关键词生成失败: %v", product.ID, err)
+				continue
+			}
+			count++
+		}
+	}
+
+	log.Printf("✅ 批量关键词生成完成: %d/%d", count, len(products))
+	return count, nil
 }

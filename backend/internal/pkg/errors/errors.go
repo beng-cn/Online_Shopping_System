@@ -56,3 +56,12 @@ func Wrapf(err error, format string, args ...interface{}) *Error {
 func Errorf(code int, format string, args ...interface{}) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
 }
+
+// IsCode 检查错误是否为指定错误码的自定义错误
+// 用于替代无法直接比较 gorm.ErrRecordNotFound 的场景
+func IsCode(err error, code int) bool {
+	if e, ok := err.(*Error); ok {
+		return e.Code == code
+	}
+	return false
+}

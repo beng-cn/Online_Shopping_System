@@ -18,6 +18,7 @@ type ProductRepository interface {
 	Update(product *entity.Product) error
 	Delete(id uint) error
 	GetByID(id uint) (*entity.Product, error)
+	GetByIDs(ids []uint) ([]*entity.Product, error) // 批量查询商品，避免 N+1 问题
 	List(keyword string, categoryID string) ([]*entity.Product, error)
 	// 乐观锁扣减库存，返回是否成功
 	DecreaseStockWithVersion(id uint, quantity int, version int) (bool, error)
@@ -74,12 +75,24 @@ func (r *productRepository) GetByID(id uint) (*entity.Product, error) {
 	return &product, nil
 }
 
+// GetByIDs 批量查询商品，使用 IN 查询一次获取所有商品，避免 N+1 问题
+func (r *productRepository) GetByIDs(ids []uint) ([]*entity.Product, error) {
+	if len(ids) == 0 {
+		return []*entity.Product{}, nil
+	}
+	var products []*entity.Product
+	if err := r.db.Where("id IN ?", ids).Find(&products).Error; err != nil {
+		return nil, errors.Wrap(err, "批量查询商品失败!")
+	}
+	return products, nil
+}
+
 func (r *productRepository) List(keyword string, categoryID string) ([]*entity.Product, error) {
 	var products []*entity.Product
 	db := r.db.Model(&entity.Product{})
 
 	if keyword != "" {
-		db = db.Where("name LIKE ?", "%"+keyword+"%")
+		db = db.Where("(name LIKE ? OR keywords LIKE ?)", "%"+keyword+"%", "%"+keyword+"%")
 	}
 	if categoryID != "" {
 		db = db.Where("category_id = ?", categoryID)
@@ -189,11 +202,10 @@ func (r *productRepository) ListPage(req *request.ProductListRequest) ([]*entity
 	var total int64
 
 	db := r.db.Model(&entity.Product{}).Where("status = ?", 1) // 默认只查询上架商品
-	db = db.Debug()                                            // 开启SQL日志，打印完整SQL
 
-	// 关键词筛选
+	// 关键词筛选：同时搜索商品名称和 keywords 别名字段
 	if req.Keyword != "" {
-		db = db.Where("name LIKE ?", "%"+req.Keyword+"%")
+		db = db.Where("(name LIKE ? OR keywords LIKE ?)", "%"+req.Keyword+"%", "%"+req.Keyword+"%")
 	}
 
 	// 分类筛选

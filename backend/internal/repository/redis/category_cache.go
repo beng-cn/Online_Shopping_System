@@ -152,17 +152,29 @@ func (c *categoryCache) SetChildCategories(parentID uint, categories []*entity.C
 	return c.rdb.Set(c.ctx, key, data, categoryBaseExpire).Err()
 }
 
+// ClearAllCategoryCache 使用 SCAN 命令清除所有分类缓存（避免 KEYS 阻塞 Redis）
 func (c *categoryCache) ClearAllCategoryCache() error {
+	// 1. 先删除父分类缓存
 	if err := c.rdb.Del(c.ctx, c.getParentKey()).Err(); err != nil {
 		return errors.Wrap(err, "清除父分类缓存失败")
 	}
-	keys, err := c.rdb.Keys(c.ctx, "category:child:*").Result()
-	if err != nil {
-		return errors.Wrap(err, "获取子分类缓存键失败")
-	}
-	if len(keys) > 0 {
-		if err := c.rdb.Del(c.ctx, keys...).Err(); err != nil {
-			return errors.Wrap(err, "清除子分类缓存失败")
+
+	// 2. 使用 SCAN 删除所有子分类缓存
+	pattern := "category:child:*"
+	var cursor uint64
+	for {
+		keys, nextCursor, err := c.rdb.Scan(c.ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return errors.Wrap(err, "扫描子分类缓存键失败")
+		}
+		if len(keys) > 0 {
+			if err := c.rdb.Del(c.ctx, keys...).Err(); err != nil {
+				return errors.Wrap(err, "清除子分类缓存失败")
+			}
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
 		}
 	}
 	return nil

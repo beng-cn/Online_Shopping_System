@@ -8,6 +8,8 @@ import (
 	"backend/internal/repository/mysql"
 	"backend/internal/repository/redis"
 	"backend/internal/service/payment"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -103,8 +105,10 @@ func (s *orderService) CreateOrder(userID uint, req *request.CreateOrderRequest)
 		})
 	}
 
-	// 3. 生成唯一订单号
-	orderNo := fmt.Sprintf("ORD%s%d", time.Now().Format("20060102150405"), time.Now().UnixNano()%1000000)
+	// 3. 生成唯一订单号（时间戳 + 8位随机十六进制，防止高并发碰撞）
+	randomBytes := make([]byte, 4)
+	_, _ = rand.Read(randomBytes)
+	orderNo := fmt.Sprintf("ORD%s%s", time.Now().Format("20060102150405"), hex.EncodeToString(randomBytes))
 
 	// 4. 创建订单
 	order := &entity.Order{
@@ -207,7 +211,7 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 		return err
 	}
 
-	// 3. 乐观锁扣减库存（省略原有代码）
+	// 3. 乐观锁扣减库存
 	for _, item := range orderItems {
 		for retry := 0; retry < 3; retry++ {
 			product, err := s.productRepo.WithTx(tx).GetByID(item.ProductID)
@@ -226,7 +230,6 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 				return err
 			}
 			if success {
-				// ====================== 新增：原子更新商品销量 ======================
 				if err := s.productRepo.WithTx(tx).IncreaseSales(item.ProductID, item.Quantity); err != nil {
 					tx.Rollback()
 					return err
@@ -274,6 +277,7 @@ func (s *orderService) GetOrderList(userID uint) ([]*response.OrderResponse, err
 	return resp, nil
 }
 
+// GetOrderItems 获取订单项详情（优化：批量查询商品，消除 N+1 问题）
 func (s *orderService) GetOrderItems(orderID uint, userID uint) ([]*response.OrderItemResponse, error) {
 	// 校验订单是否属于当前用户
 	order, err := s.orderRepo.GetByID(orderID)
@@ -290,15 +294,36 @@ func (s *orderService) GetOrderItems(orderID uint, userID uint) ([]*response.Ord
 		return nil, err
 	}
 
-	// 查询商品信息并转换为响应DTO
+	if len(items) == 0 {
+		return []*response.OrderItemResponse{}, nil
+	}
+
+	// 收集所有商品ID，批量查询（避免 N+1）
+	productIDs := make([]uint, len(items))
+	for i, item := range items {
+		productIDs[i] = item.ProductID
+	}
+	products, err := s.productRepo.GetByIDs(productIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// 构建 ID→商品 映射
+	productMap := make(map[uint]*entity.Product, len(products))
+	for _, p := range products {
+		productMap[p.ID] = p
+	}
+
+	// 转换为响应DTO
 	var resp []*response.OrderItemResponse
 	for _, item := range items {
-		product, err := s.productRepo.GetByID(item.ProductID)
-		if err != nil {
-			return nil, err
+		product, ok := productMap[item.ProductID]
+		name := "未知商品"
+		if ok {
+			name = product.Name
 		}
 		resp = append(resp, &response.OrderItemResponse{
-			Name:     product.Name,
+			Name:     name,
 			Price:    item.Price,
 			Quantity: item.Quantity,
 		})

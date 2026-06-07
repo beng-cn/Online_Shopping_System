@@ -47,7 +47,8 @@ func InitApp() (*router.Router, error) {
 		return nil, err
 	}
 	productCache := redis.NewProductCache(client)
-	productService := product.NewProductService(productRepository, productCache)
+	categoryRepository := mysql.NewCategoryRepository(db)
+	productService := product.NewProductService(productRepository, productCache, categoryRepository)
 	productController := product2.NewProductController(productService)
 	cartRepository := mysql.NewCartRepository(db)
 	cartService := cart.NewCartService(cartRepository, productRepository)
@@ -60,7 +61,6 @@ func InitApp() (*router.Router, error) {
 	}
 	orderService := order.NewOrderService(db, orderRepository, orderItemRepository, cartRepository, productRepository, productCache, alipayService)
 	orderController := order2.NewOrderController(orderService, alipayService)
-	categoryRepository := mysql.NewCategoryRepository(db)
 	categoryCache := redis.NewCategoryCache(client)
 	categoryService := category.NewCategoryService(categoryRepository, categoryCache)
 	categoryController := category2.NewCategoryController(categoryService)

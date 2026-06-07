@@ -167,13 +167,34 @@ func (c *productCache) SetProductList(keyword string, categoryID string, product
 	return c.rdb.Set(c.ctx, key, data, productBaseExpire).Err()
 }
 
+// ClearAllProductList 使用 SCAN 命令删除所有商品列表缓存（避免 KEYS 阻塞 Redis）
 func (c *productCache) ClearAllProductList() error {
-	keys, err := c.rdb.Keys(c.ctx, "product:list:*").Result()
-	if err != nil {
-		return errors.Wrap(err, "获取商品列表缓存键失败")
+	pattern := "product:list:*"
+	var cursor uint64
+	var totalDeleted int
+
+	for {
+		// 每次 SCAN 一批 key，不会阻塞 Redis
+		keys, nextCursor, err := c.rdb.Scan(c.ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return errors.Wrap(err, "扫描商品列表缓存键失败")
+		}
+
+		if len(keys) > 0 {
+			if err := c.rdb.Del(c.ctx, keys...).Err(); err != nil {
+				return errors.Wrap(err, "删除商品列表缓存失败")
+			}
+			totalDeleted += len(keys)
+		}
+
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
 	}
-	if len(keys) > 0 {
-		return c.rdb.Del(c.ctx, keys...).Err()
+
+	if totalDeleted > 0 {
+		log.Printf("🗑️  已清除 %d 个商品列表缓存键", totalDeleted)
 	}
 	return nil
 }

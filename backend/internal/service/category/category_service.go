@@ -120,6 +120,11 @@ func (s *categoryService) GetParentCategories() ([]*response.CategoryResponse, e
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ 异步写入父分类缓存发生panic: %v", r)
+			}
+		}()
 		if err := s.categoryCache.SetParentCategories(categories); err != nil {
 			log.Printf("⚠️ 写入父分类缓存失败: %v", err)
 		}
@@ -141,6 +146,11 @@ func (s *categoryService) GetChildCategories(parentID uint) ([]*response.Categor
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ 异步写入子分类缓存发生panic: %v", r)
+			}
+		}()
 		if err := s.categoryCache.SetChildCategories(parentID, categories); err != nil {
 			log.Printf("⚠️ 写入子分类缓存失败: %v", err)
 		}

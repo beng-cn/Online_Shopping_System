@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"runtime/debug"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -70,6 +71,18 @@ func (r *Router) Setup() *gin.Engine {
 	engine.Use(gin.Logger())
 	engine.Use(middleware.Cors())
 	engine.Use(CustomRecovery())
+
+	// 全局限流：每秒200请求，突发上限300（可根据业务调整）
+	limiter := middleware.NewRateLimiter(200, 300)
+	engine.Use(limiter.Handler())
+
+	// 健康检查端点（用于 K8s / 负载均衡器探活）
+	engine.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status": "ok",
+			"time":   time.Now().Format("2006-01-02 15:04:05"),
+		})
+	})
 
 	// 静态文件服务
 	engine.Static("/uploads", "./uploads")
@@ -146,9 +159,13 @@ func (r *Router) Setup() *gin.Engine {
 		// 图片上传
 		adminGroup.POST("/upload", r.AdminController.UploadImage)
 
+		// 搜索优化
+		adminGroup.POST("/product/batch-keywords", r.AdminController.BatchGenerateKeywords)
+
 		// 用户管理
 		adminGroup.GET("/user/list", r.UserController.ListUsers)
 		adminGroup.PUT("/user/:id/status", r.UserController.UpdateUserStatus)
+		adminGroup.PUT("/user/:id/reset-password", r.UserController.ResetUserPassword)
 		adminGroup.DELETE("/user/:id", r.UserController.DeleteUser)
 	}
 

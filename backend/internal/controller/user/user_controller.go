@@ -109,7 +109,7 @@ func (c *UserController) UpdateUserStatus(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.userService.UpdateUserStatus(uint(id), req.Status); err != nil {
+	if err := c.userService.UpdateUserStatus(uint(id), *req.Status); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -126,6 +126,28 @@ func (c *UserController) DeleteUser(ctx *gin.Context) {
 	}
 
 	if err := c.userService.DeleteUser(uint(id)); err != nil {
+		response.Error(ctx, err)
+		return
+	}
+
+	response.Success(ctx, nil)
+}
+
+// 管理员重置用户密码（bcrypt不可逆，只能重置不能查看）
+func (c *UserController) ResetUserPassword(ctx *gin.Context) {
+	id, err := strconv.Atoi(ctx.Param("id"))
+	if err != nil || id <= 0 {
+		response.Error(ctx, errors.NewParamError("用户ID无效"))
+		return
+	}
+
+	var req request.ResetUserPasswordRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		response.Error(ctx, errors.NewParamError(err.Error()))
+		return
+	}
+
+	if err := c.userService.ResetUserPassword(uint(id), &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}

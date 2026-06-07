@@ -6,10 +6,16 @@ import (
 	"backend/internal/pkg/response"
 	"backend/internal/service/category"
 	"backend/internal/service/product"
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -144,9 +150,9 @@ func (c *AdminController) DeleteCategory(ctx *gin.Context) {
 	response.Success(ctx, nil)
 }
 
-// 上传图片
+// 上传图片（安全增强版）
 func (c *AdminController) UploadImage(ctx *gin.Context) {
-	// 解析上传文件（最大10MB）
+	// 1. 解析上传文件（最大10MB）
 	if err := ctx.Request.ParseMultipartForm(10 << 20); err != nil {
 		response.Error(ctx, errors.NewParamError("文件大小不能超过10MB"))
 		return
@@ -159,20 +165,50 @@ func (c *AdminController) UploadImage(ctx *gin.Context) {
 	}
 	defer file.Close()
 
-	// 校验文件类型
+	// 2. 通过文件魔数检测真实类型（不信任 Content-Type 头）
+	// 读取文件头部 512 字节用于类型检测，与 http.DetectContentType 保持一致
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(file, head)
+	if n == 0 {
+		response.Error(ctx, errors.NewParamError("无法读取文件内容"))
+		return
+	}
+	head = head[:n]
+
+	detectedType := http.DetectContentType(head)
 	allowedTypes := map[string]bool{
 		"image/jpeg": true,
-		"image/jpg":  true,
 		"image/png":  true,
 		"image/gif":  true,
 	}
-	contentType := handler.Header.Get("Content-Type")
-	if !allowedTypes[contentType] {
+	if !allowedTypes[detectedType] {
 		response.Error(ctx, errors.NewParamError("仅支持上传 jpg、png、gif 格式的图片"))
 		return
 	}
 
-	// 创建上传目录
+	// 重置文件指针到开头，以便后续完整写入
+	var fileReader io.Reader
+	if seeker, ok := file.(io.Seeker); ok {
+		seeker.Seek(0, io.SeekStart)
+		fileReader = file
+	} else {
+		// 无法 seek 时，将已读的头部 + 剩余内容拼接
+		fileReader = io.MultiReader(bytes.NewReader(head), file)
+	}
+
+	// 3. 安全的文件扩展名处理
+	ext := strings.ToLower(filepath.Ext(handler.Filename))
+	detectedExt := map[string]string{
+		"image/jpeg": ".jpg",
+		"image/png":  ".png",
+		"image/gif":  ".gif",
+	}[detectedType]
+	// 以魔数检测结果为准，忽略用户传入的扩展名
+	if detectedExt != "" {
+		ext = detectedExt
+	}
+
+	// 4. 创建上传目录
 	uploadDir := "./uploads"
 	if _, err := os.Stat(uploadDir); os.IsNotExist(err) {
 		if err := os.MkdirAll(uploadDir, 0755); err != nil {
@@ -181,12 +217,13 @@ func (c *AdminController) UploadImage(ctx *gin.Context) {
 		}
 	}
 
-	// 生成唯一文件名
-	ext := filepath.Ext(handler.Filename)
-	filename := fmt.Sprintf("%d%s", time.Now().UnixNano(), ext)
+	// 5. 生成并发安全的唯一文件名（时间戳 + 16位加密随机十六进制）
+	randomBytes := make([]byte, 8)
+	_, _ = rand.Read(randomBytes)
+	filename := fmt.Sprintf("%d%s%s", time.Now().UnixNano(), hex.EncodeToString(randomBytes), ext)
 	filePath := filepath.Join(uploadDir, filename)
 
-	// 保存文件
+	// 6. 保存文件
 	dst, err := os.Create(filePath)
 	if err != nil {
 		response.Error(ctx, errors.Wrap(err, "保存文件失败"))
@@ -194,12 +231,22 @@ func (c *AdminController) UploadImage(ctx *gin.Context) {
 	}
 	defer dst.Close()
 
-	if _, err := dst.ReadFrom(file); err != nil {
+	if _, err := io.Copy(dst, fileReader); err != nil {
 		response.Error(ctx, errors.Wrap(err, "保存文件失败"))
 		return
 	}
 
-	// 生成访问URL
+	// 7. 生成访问URL
 	imageURL := fmt.Sprintf("http://localhost:8080/uploads/%s", filename)
 	response.Success(ctx, gin.H{"url": imageURL})
+}
+
+// 批量生成商品搜索关键词（管理员操作，为存量商品补充关键词）
+func (c *AdminController) BatchGenerateKeywords(ctx *gin.Context) {
+	count, err := c.productService.BatchGenerateKeywords()
+	if err != nil {
+		response.Error(ctx, err)
+		return
+	}
+	response.Success(ctx, gin.H{"generated_count": count, "message": fmt.Sprintf("成功为 %d 个商品生成关键词", count)})
 }

@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -14,6 +19,11 @@ func main() {
 
 	// 异步执行缓存预热（不阻塞服务启动）
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ 缓存预热发生panic: %v", r)
+			}
+		}()
 		// 延迟1秒确保数据库和Redis连接完全就绪
 		time.Sleep(1 * time.Second)
 
@@ -32,10 +42,35 @@ func main() {
 		}
 	}()
 
-	// 启动HTTP服务
-	fmt.Printf("✅ 服务器启动成功，监听端口: %d\n", router.Config.Server.Port)
-	fmt.Printf("🌐 访问地址: http://localhost:%d\n", router.Config.Server.Port)
-	if err := router.Setup().Run(fmt.Sprintf(":%d", router.Config.Server.Port)); err != nil {
-		panic(fmt.Sprintf("服务器启动失败: %v", err))
+	// 创建 HTTP Server 实例（支持优雅关闭）
+	addr := fmt.Sprintf(":%d", router.Config.Server.Port)
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: router.Setup(),
 	}
+
+	// 在独立 goroutine 中启动服务器
+	go func() {
+		fmt.Printf("✅ 服务器启动成功，监听端口: %d\n", router.Config.Server.Port)
+		fmt.Printf("🌐 访问地址: http://localhost:%d\n", router.Config.Server.Port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			panic(fmt.Sprintf("服务器启动失败: %v", err))
+		}
+	}()
+
+	// 监听操作系统退出信号（实现优雅关闭）
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-quit
+	fmt.Printf("\n🛑 收到 %v 信号，开始优雅关闭...\n", sig)
+
+	// 设置 10 秒超时等待现有请求处理完毕
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("⚠️ 服务器强制关闭: %v", err)
+	}
+
+	fmt.Println("✅ 服务器已安全关闭")
 }

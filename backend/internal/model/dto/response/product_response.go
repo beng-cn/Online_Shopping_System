@@ -7,6 +7,7 @@ type ProductResponse struct {
 	ID         uint      `json:"id"`
 	CategoryID uint      `json:"category_id"`
 	Name       string    `json:"name"`
+	Keywords   string    `json:"keywords"`
 	Price      float64   `json:"price"`
 	Stock      int       `json:"stock"`
 	Image      string    `json:"image"`
