@@ -1,0 +1,35 @@
+# 编译产物
+server.exe
+*.exe
+
+# 上传文件（运行时挂载卷，不打入镜像）
+uploads/
+
+# 日志
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# 测试文件
+cmd/uploadtest/
+*_test.go
+
+# Docker 自身
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# 环境配置（docker.yaml 保留）
+configs/dev.yaml
+configs/test.yaml
+configs/prod.yaml
+
+# 临时文件
+/tmp/
+*.tmp

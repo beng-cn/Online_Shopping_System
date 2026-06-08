@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -70,6 +71,10 @@ func Load() (*AppConfig, error) {
 	if env == "" {
 		env = "dev"
 	}
+
+	// 启用环境变量覆盖：MYSQL_HOST → mysql.host, REDIS_HOST → redis.host
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	viper.SetConfigName(env)
 	viper.SetConfigType("yaml")

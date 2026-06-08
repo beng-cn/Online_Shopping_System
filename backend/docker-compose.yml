@@ -1,0 +1,66 @@
+services:
+  # ==================== Go 后端 ====================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mall-backend
+    ports:
+      - "8080:8080"
+    environment:
+      GO_ENV: docker
+    volumes:
+      # 上传图片持久化
+      - uploads_data:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - mall-network
+    restart: unless-stopped
+
+  # ==================== MySQL ====================
+  mysql:
+    image: mysql:8.0
+    container_name: mall-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: mall
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    ports:
+      - "3307:3306"               # 宿主机 3307 映射容器 3306，避免端口冲突
+    volumes:
+      - mysql_data:/var/lib/mysql  # 数据持久化
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql  # 首次启动自动建表+种子数据
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - mall-network
+    restart: unless-stopped
+
+  # ==================== Redis ====================
+  redis:
+    image: redis:7-alpine
+    container_name: mall-redis
+    volumes:
+      - redis_data:/data          # 数据持久化
+    networks:
+      - mall-network
+    restart: unless-stopped
+
+# ==================== 持久化卷 ====================
+volumes:
+  mysql_data:
+  redis_data:
+  uploads_data:
+
+# ==================== 内部网络 ====================
+networks:
+  mall-network:
+    driver: bridge

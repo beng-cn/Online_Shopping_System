@@ -1,0 +1,33 @@
+server:
+  port: 8080
+  run_mode: debug
+
+mysql:
+  host: 127.0.0.1
+  port: 3306
+  username: root
+  password: your-password
+  database: Online_Shopping_System
+  charset: utf8mb4
+  parse_time: true
+  loc: Local
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: your-jwt-secret-change-me
+  expire_hours: 24
+
+alipay:
+  app_id: your-alipay-app-id
+  private_key: "your-alipay-private-key"
+  public_key: "your-alipay-public-key"
+  notify_url: http://127.0.0.1:8080/api/alipay/notify
+  return_url: http://127.0.0.1:8080/api/alipay/success
+
+cache:
+  hot_product_warm_up_limit: 100

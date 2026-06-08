@@ -1,0 +1,33 @@
+server:
+  port: 8080
+  run_mode: release
+
+mysql:
+  host: mysql        # Docker 容器名
+  port: 3306
+  username: root
+  password: root123
+  database: mall
+  charset: utf8mb4
+  parse_time: true
+  loc: Local
+
+redis:
+  host: redis        # Docker 容器名
+  port: 6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: ${JWT_SECRET:-change-me-in-production}
+  expire_hours: 24
+
+alipay:
+  app_id: ${ALIPAY_APP_ID:-}
+  private_key: ${ALIPAY_PRIVATE_KEY:-}
+  public_key: ${ALIPAY_PUBLIC_KEY:-}
+  notify_url: ${ALIPAY_NOTIFY_URL:-}
+  return_url: ${ALIPAY_RETURN_URL:-}
+
+cache:
+  hot_product_warm_up_limit: 100
