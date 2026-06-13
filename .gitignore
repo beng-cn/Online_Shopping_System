@@ -2,3 +2,7 @@
 backend/configs/dev.yaml
 backend/configs/prod.yaml
 backend/configs/test.yaml
+
+# 提交辅助脚本
+git-safe-push.sh
+敏感信息.txt
