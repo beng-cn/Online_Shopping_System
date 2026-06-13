@@ -11,6 +11,7 @@ CREATE TABLE `users` (
   `deleted_at` datetime DEFAULT NULL,
   `username` varchar(50) NOT NULL,
   `password` varchar(255) NOT NULL,
+  `admin_pin` varchar(255) DEFAULT NULL COMMENT '管理员PIN码(bcrypt加密)，非管理员为NULL',
   `nickname` varchar(50) DEFAULT '',
   `email` varchar(100) DEFAULT '',
   `phone` varchar(20) DEFAULT '',
@@ -82,9 +83,10 @@ CREATE TABLE `orders` (
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `deleted_at` datetime DEFAULT NULL,
   `user_id` int unsigned NOT NULL,
+  `flash_sale_id` int unsigned DEFAULT NULL COMMENT '秒杀活动ID（NULL=普通订单）',
   `order_no` varchar(64) NOT NULL,
   `total` decimal(10,2) NOT NULL,
-  `status` int NOT NULL DEFAULT '0',
+  `status` int NOT NULL DEFAULT '0' COMMENT '0=待支付 1=已支付 2=已取消 3=待释放(秒杀冷却期)',
   PRIMARY KEY (`id`),
   UNIQUE KEY `idx_orders_order_no` (`order_no`),
   KEY `idx_orders_deleted_at` (`deleted_at`),
@@ -107,6 +109,27 @@ CREATE TABLE `order_items` (
   KEY `idx_order_items_deleted_at` (`deleted_at`),
   CONSTRAINT `fk_order_items_order_id` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`),
   CONSTRAINT `fk_order_items_product_id` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 秒杀活动表
+CREATE TABLE `flash_sales` (
+  `id` int unsigned NOT NULL AUTO_INCREMENT,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `deleted_at` datetime DEFAULT NULL,
+  `product_id` int unsigned NOT NULL COMMENT '关联商品ID',
+  `flash_price` decimal(10,2) NOT NULL COMMENT '秒杀价格',
+  `flash_stock` int NOT NULL COMMENT '秒杀总库存',
+  `queue_cap` int NOT NULL DEFAULT '0' COMMENT '排队入场上限（0=按库存×10自动计算）',
+  `start_time` datetime NOT NULL COMMENT '秒杀开始时间',
+  `end_time` datetime NOT NULL COMMENT '秒杀结束时间',
+  `status` tinyint NOT NULL DEFAULT '0' COMMENT '0=未开始 1=进行中 2=已结束 3=已取消',
+  `version` int NOT NULL DEFAULT '0' COMMENT '乐观锁版本号',
+  PRIMARY KEY (`id`),
+  KEY `idx_flash_sales_deleted_at` (`deleted_at`),
+  KEY `idx_flash_sales_time_status` (`start_time`,`end_time`,`status`),
+  KEY `idx_flash_sales_product` (`product_id`),
+  CONSTRAINT `fk_flash_sales_product_id` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================

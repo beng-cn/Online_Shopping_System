@@ -33,3 +33,19 @@ type UpdateUserStatusRequest struct {
 type ResetUserPasswordRequest struct {
 	Password string `json:"password" binding:"required,min=6" msg:"新密码长度不能少于6位"`
 }
+
+// 管理员验证PIN码请求（二次验证）
+type VerifyAdminPinRequest struct {
+	Pin string `json:"pin" binding:"required,min=4,max=20" msg:"PIN码长度需在4-20位之间"`
+}
+
+// 管理员设置PIN码请求
+type SetAdminPinRequest struct {
+	Pin string `json:"pin" binding:"required,min=4,max=20" msg:"PIN码长度需在4-20位之间"`
+}
+
+// 找回密码请求（通过手机号验证）
+type ForgotPasswordRequest struct {
+	Phone       string `json:"phone" binding:"required,len=11" msg:"请输入11位手机号"`
+	NewPassword string `json:"new_password" binding:"required,min=6" msg:"新密码长度不能少于6位"`
+}

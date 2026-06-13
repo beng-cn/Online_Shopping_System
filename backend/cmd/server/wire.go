@@ -10,6 +10,7 @@ import (
 	// 给Controller层的包加 Ctrl 后缀别名
 	cartCtrl "backend/internal/controller/cart"
 	categoryCtrl "backend/internal/controller/category"
+	flashCtrl "backend/internal/controller/flash"
 	orderCtrl "backend/internal/controller/order"
 	productCtrl "backend/internal/controller/product"
 	userCtrl "backend/internal/controller/user"
@@ -21,6 +22,7 @@ import (
 	"backend/internal/pkg/jwt"
 	cartSvc "backend/internal/service/cart"
 	categorySvc "backend/internal/service/category"
+	flashSvc "backend/internal/service/flash"
 	orderSvc "backend/internal/service/order"
 	"backend/internal/service/payment"
 	productSvc "backend/internal/service/product"
@@ -48,10 +50,12 @@ func InitApp() (*router.Router, error) {
 		mysql.NewOrderRepository,
 		mysql.NewOrderItemRepository,
 		mysql.NewCategoryRepository,
+		mysql.NewFlashRepository, // 秒杀
 
 		// Redis Cache
 		redis.NewProductCache,
 		redis.NewCategoryCache,
+		redis.NewFlashCache, // 秒杀
 
 		// Service
 		userSvc.NewUserService,
@@ -60,6 +64,7 @@ func InitApp() (*router.Router, error) {
 		orderSvc.NewOrderService,
 		categorySvc.NewCategoryService,
 		payment.NewAlipayService,
+		flashSvc.NewFlashService, // 秒杀
 
 		// Controller
 		userCtrl.NewUserController,
@@ -68,6 +73,8 @@ func InitApp() (*router.Router, error) {
 		orderCtrl.NewOrderController,
 		categoryCtrl.NewCategoryController,
 		admin.NewAdminController,
+		flashCtrl.NewFlashController,       // 秒杀用户端
+		flashCtrl.NewAdminFlashController,  // 秒杀管理端
 
 		// Router
 		router.NewRouter,

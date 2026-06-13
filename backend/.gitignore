@@ -21,6 +21,13 @@ logs/
 cmd/uploadtest/
 cmd/genhash/
 
+# Claude Code
+CLAUDE.md
+
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 敏感信息
+账密.txt
+test_flash_api.py

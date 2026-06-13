@@ -1,1 +1,4 @@
-backend/configs/
+# 排除含敏感信息的本地配置文件
+backend/configs/dev.yaml
+backend/configs/prod.yaml
+backend/configs/test.yaml

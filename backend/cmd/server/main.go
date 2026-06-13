@@ -17,11 +17,11 @@ func main() {
 		panic(fmt.Sprintf("应用初始化失败: %v", err))
 	}
 
-	// 异步执行缓存预热（不阻塞服务启动）
+	// 异步执行缓存预热和秒杀崩溃恢复（不阻塞服务启动）
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("⚠️ 缓存预热发生panic: %v", r)
+				log.Printf("⚠️ 启动后初始化发生panic: %v", r)
 			}
 		}()
 		// 延迟1秒确保数据库和Redis连接完全就绪
@@ -39,6 +39,27 @@ func main() {
 		}
 		if err := router.ProductService.WarmUpHotProducts(hotLimit); err != nil {
 			log.Printf("⚠️ 热门商品缓存预热失败: %v", err)
+		}
+
+		// 秒杀崩溃恢复：处理上次非正常退出遗留的防丢失记录
+		router.FlashService.RecoverPendingOrders()
+	}()
+
+	// 秒杀超时订单扫描器（每30秒执行一次）
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ 秒杀超时扫描器发生panic: %v", r)
+			}
+		}()
+		// 延迟5秒启动，确保服务已完全就绪
+		time.Sleep(5 * time.Second)
+
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			router.FlashService.ScanExpiredOrders()
 		}
 	}()
 

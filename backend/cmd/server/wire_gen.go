@@ -11,6 +11,7 @@ import (
 	"backend/internal/controller/admin"
 	cart2 "backend/internal/controller/cart"
 	category2 "backend/internal/controller/category"
+	flash2 "backend/internal/controller/flash"
 	order2 "backend/internal/controller/order"
 	product2 "backend/internal/controller/product"
 	user2 "backend/internal/controller/user"
@@ -20,6 +21,7 @@ import (
 	"backend/internal/router"
 	"backend/internal/service/cart"
 	"backend/internal/service/category"
+	"backend/internal/service/flash"
 	"backend/internal/service/order"
 	"backend/internal/service/payment"
 	"backend/internal/service/product"
@@ -65,6 +67,11 @@ func InitApp() (*router.Router, error) {
 	categoryService := category.NewCategoryService(categoryRepository, categoryCache)
 	categoryController := category2.NewCategoryController(categoryService)
 	adminController := admin.NewAdminController(productService, categoryService)
-	routerRouter := router.NewRouter(appConfig, jwtUtil, userController, productController, cartController, orderController, categoryController, adminController, productService, categoryService)
+	flashRepository := mysql.NewFlashRepository(db)
+	flashCache := redis.NewFlashCache(client)
+	flashService := flash.NewFlashService(db, appConfig, flashRepository, flashCache, orderRepository, orderItemRepository, productRepository, productCache)
+	flashController := flash2.NewFlashController(flashService)
+	adminFlashController := flash2.NewAdminFlashController(flashService)
+	routerRouter := router.NewRouter(appConfig, jwtUtil, userController, productController, cartController, orderController, categoryController, adminController, flashController, adminFlashController, productService, categoryService, flashService)
 	return routerRouter, nil
 }

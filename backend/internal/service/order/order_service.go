@@ -182,7 +182,8 @@ func (s *orderService) GetOrderByOrderNo(orderNo string) (*entity.Order, error) 
 	return order, nil
 }
 
-// 在ProcessOrderPayment方法中，库存扣减成功后立即更新销量
+// ProcessOrderPayment 处理订单支付（公共方法，被 PayOrder、AliPayNotify、AliPayReturn 调用）
+// 使用条件UPDATE防止与秒杀超时扫描器竞态
 func (s *orderService) ProcessOrderPayment(orderID uint) error {
 	// 开启事务
 	tx := s.db.Begin()
@@ -195,14 +196,24 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 		}
 	}()
 
-	// 1. 查询订单
-	_, err := s.orderRepo.WithTx(tx).GetByID(orderID)
+	// 1. 查询订单并做状态幂等校验
+	order, err := s.orderRepo.WithTx(tx).GetByID(orderID)
 	if err != nil {
 		tx.Rollback()
 		return err
 	}
 
-	// 幂等性校验（省略原有代码）
+	// 幂等性处理：已支付直接返回成功
+	if order.Status == 1 {
+		tx.Rollback()
+		return nil
+	}
+	// 已取消的订单不可支付（status=2为普通取消，status=3为秒杀冷却期可支付）
+	if order.Status == 2 {
+		tx.Rollback()
+		return errors.New(errors.CodeOrderCancelled, "订单已取消")
+	}
+	// status=0(待支付)或status=3(秒杀冷却期)均可支付
 
 	// 2. 查询订单项
 	orderItems, err := s.orderItemRepo.WithTx(tx).GetByOrderID(orderID)
@@ -245,14 +256,34 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 		}
 	}
 
-	// 4. 更新订单状态为已支付（省略原有代码）
+	// 4. 条件更新订单状态为已支付
+	// WHERE status IN(0,3) 确保不会覆盖已被超时扫描器取消的订单
+	result := tx.Model(&entity.Order{}).
+		Where("id = ? AND status IN (0, 3)", orderID).
+		Update("status", 1)
+
+	if result.Error != nil {
+		tx.Rollback()
+		return errors.Wrap(result.Error, "更新订单状态失败")
+	}
+
+	if result.RowsAffected == 0 {
+		// 状态已被并发修改（超时扫描器可能已将status从0改为3或2）
+		tx.Rollback()
+		// 重新查询确认最终状态
+		current, _ := s.orderRepo.GetByID(orderID)
+		if current != nil && current.Status == 1 {
+			return nil // 已被其他支付流程处理，幂等返回
+		}
+		return errors.New(errors.CodeOrderCancelled, "订单已超时取消")
+	}
 
 	// 5. 提交事务
 	if err := tx.Commit().Error; err != nil {
 		return errors.Wrap(err, "提交事务失败")
 	}
 
-	// 6. 清理商品列表缓存（省略原有代码）
+	// 6. 清理商品列表缓存
 	s.productCache.ClearAllProductList()
 
 	return nil

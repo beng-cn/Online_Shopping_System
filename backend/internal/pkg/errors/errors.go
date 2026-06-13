@@ -23,6 +23,18 @@ const (
 	CodeUserDisabled       = 1009 // 用户已禁用
 	CodeCategoryHasProduct = 1010 // 分类下有商品
 	CodeCategoryHasChild   = 1011 // 分类下有子分类
+	CodeAdminPinError      = 1012 // 管理员PIN码错误
+	CodeAdminPinNotSet     = 1013 // 管理员PIN码未设置
+
+	// 秒杀业务错误码
+	CodeFlashSaleNotFound    = 2001 // 秒杀活动不存在
+	CodeFlashSaleNotStarted  = 2002 // 秒杀活动未开始
+	CodeFlashSaleEnded       = 2003 // 秒杀活动已结束
+	CodeFlashSaleSoldOut     = 2004 // 秒杀库存已售罄
+	CodeFlashSaleAlreadyDone = 2005 // 已参与过该秒杀
+	CodeFlashSaleCancelled   = 2006 // 秒杀活动已取消
+	CodeFlashQueueFull       = 2007 // 排队人数已满
+	CodeFlashNotEntered      = 2008 // 未获取入场资格
 )
 
 // 自定义错误类型

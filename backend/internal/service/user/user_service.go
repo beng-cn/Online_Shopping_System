@@ -20,6 +20,9 @@ type UserService interface {
 	DeleteUser(id uint) error
 	ListUsers(pageNum int, pageSize int, keyword string) (*response.PageResponse, error)
 	ResetUserPassword(id uint, req *request.ResetUserPasswordRequest) error // 管理员重置用户密码
+	VerifyAdminPin(userID uint, req *request.VerifyAdminPinRequest) error // 验证管理员PIN码
+	SetAdminPin(userID uint, req *request.SetAdminPinRequest) error       // 设置管理员PIN码
+	ResetPasswordByPhone(req *request.ForgotPasswordRequest) error        // 通过手机号找回密码
 }
 
 type userService struct {
@@ -249,5 +252,83 @@ func (s *userService) ResetUserPassword(id uint, req *request.ResetUserPasswordR
 	}
 
 	user.Password = string(hash)
+	return s.userRepo.Update(user)
+}
+
+// VerifyAdminPin 验证管理员PIN码（管理员访问后台的二次验证）
+func (s *userService) VerifyAdminPin(userID uint, req *request.VerifyAdminPinRequest) error {
+	// 查询用户
+	user, err := s.userRepo.GetByID(userID)
+	if err != nil {
+		return err
+	}
+
+	// 仅管理员需要PIN验证
+	if user.RoleID != 1 {
+		return errors.New(errors.CodeForbidden, "仅管理员需要PIN验证")
+	}
+
+	// 检查PIN是否已设置
+	if user.AdminPin == "" {
+		return errors.New(errors.CodeAdminPinNotSet, "管理员PIN码未设置，请在安全设置中设置")
+	}
+
+	// 验证PIN
+	if err := bcrypt.CompareHashAndPassword([]byte(user.AdminPin), []byte(req.Pin)); err != nil {
+		return errors.New(errors.CodeAdminPinError, "管理员PIN码错误")
+	}
+
+	return nil
+}
+
+// ResetPasswordByPhone 通过手机号找回密码（公开接口，无需登录，仅限普通用户）
+// 管理员不可通过此接口重置密码，只能通过数据库直接修改
+func (s *userService) ResetPasswordByPhone(req *request.ForgotPasswordRequest) error {
+	// 通过手机号查找用户
+	user, err := s.userRepo.GetByPhone(req.Phone)
+	if err != nil {
+		return err // 手机号未注册或查询失败
+	}
+
+	// 管理员不可通过此接口找回密码
+	if user.RoleID == 1 {
+		return errors.New(errors.CodeForbidden, "管理员账号不支持此方式找回密码，请联系数据库管理员")
+	}
+
+	// 检查用户状态
+	if user.Status != 1 {
+		return errors.New(errors.CodeUserDisabled, "该账号已被禁用，无法重置密码")
+	}
+
+	// 加密新密码
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return errors.Wrap(err, "密码加密失败")
+	}
+
+	user.Password = string(hash)
+	return s.userRepo.Update(user)
+}
+
+// SetAdminPin 设置管理员PIN码
+func (s *userService) SetAdminPin(userID uint, req *request.SetAdminPinRequest) error {
+	// 查询用户
+	user, err := s.userRepo.GetByID(userID)
+	if err != nil {
+		return err
+	}
+
+	// 仅管理员可以设置PIN
+	if user.RoleID != 1 {
+		return errors.New(errors.CodeForbidden, "仅管理员可以设置PIN码")
+	}
+
+	// bcrypt加密PIN
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Pin), bcrypt.DefaultCost)
+	if err != nil {
+		return errors.Wrap(err, "PIN码加密失败")
+	}
+
+	user.AdminPin = string(hash)
 	return s.userRepo.Update(user)
 }

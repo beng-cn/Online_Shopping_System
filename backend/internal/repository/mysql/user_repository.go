@@ -14,6 +14,7 @@ type UserRepository interface {
 	Delete(id uint) error
 	GetByID(id uint) (*entity.User, error)
 	GetByUsername(username string) (*entity.User, error)
+	GetByPhone(phone string) (*entity.User, error) // 通过手机号查找用户
 	List(pageNum, pageSize int, keyword string) ([]*entity.User, int64, error)
 	WithTx(tx *gorm.DB) UserRepository
 }
@@ -78,6 +79,18 @@ func (r *userRepository) GetByUsername(username string) (*entity.User, error) {
 	if err := r.db.Where("username = ?", username).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, errors.New(errors.CodeUserNotFound, "用户不存在!")
+		}
+		return nil, errors.Wrap(err, "查询用户失败!")
+	}
+	return &user, nil
+}
+
+// GetByPhone 通过手机号查找用户（用于找回密码）
+func (r *userRepository) GetByPhone(phone string) (*entity.User, error) {
+	var user entity.User
+	if err := r.db.Where("phone = ?", phone).First(&user).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, errors.New(errors.CodeUserNotFound, "该手机号未注册")
 		}
 		return nil, errors.Wrap(err, "查询用户失败!")
 	}

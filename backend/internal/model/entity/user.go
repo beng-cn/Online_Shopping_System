@@ -13,6 +13,7 @@ type User struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	Username  string         `gorm:"unique;not null;index:idx_user_username_like,length:10" json:"username"`
 	Password  string         `gorm:"not null" json:"-"`
+	AdminPin  string         `gorm:"type:varchar(255);comment:'管理员PIN码，bcrypt加密，非管理员为NULL'" json:"-"`
 	Nickname  string         `json:"nickname"`
 	Email     string         `json:"email"`
 	Phone     string         `json:"phone"`

@@ -34,6 +34,22 @@ func (c *UserController) Register(ctx *gin.Context) {
 	response.Success(ctx, nil)
 }
 
+// ForgotPassword 找回密码（通过手机号验证后重置）
+func (c *UserController) ForgotPassword(ctx *gin.Context) {
+	var req request.ForgotPasswordRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		response.Error(ctx, errors.NewParamError(err.Error()))
+		return
+	}
+
+	if err := c.userService.ResetPasswordByPhone(&req); err != nil {
+		response.Error(ctx, err)
+		return
+	}
+
+	response.Success(ctx, gin.H{"message": "密码重置成功，请使用新密码登录"})
+}
+
 // 用户登录
 func (c *UserController) Login(ctx *gin.Context) {
 	var req request.LoginRequest
@@ -131,6 +147,40 @@ func (c *UserController) DeleteUser(ctx *gin.Context) {
 	}
 
 	response.Success(ctx, nil)
+}
+
+// VerifyAdminPin 验证管理员PIN码（二次验证）
+func (c *UserController) VerifyAdminPin(ctx *gin.Context) {
+	var req request.VerifyAdminPinRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		response.Error(ctx, errors.NewParamError(err.Error()))
+		return
+	}
+
+	userID := ctx.GetUint("user_id")
+	if err := c.userService.VerifyAdminPin(userID, &req); err != nil {
+		response.Error(ctx, err)
+		return
+	}
+
+	response.Success(ctx, gin.H{"verified": true})
+}
+
+// SetAdminPin 设置管理员PIN码
+func (c *UserController) SetAdminPin(ctx *gin.Context) {
+	var req request.SetAdminPinRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		response.Error(ctx, errors.NewParamError(err.Error()))
+		return
+	}
+
+	userID := ctx.GetUint("user_id")
+	if err := c.userService.SetAdminPin(userID, &req); err != nil {
+		response.Error(ctx, err)
+		return
+	}
+
+	response.Success(ctx, gin.H{"message": "PIN码设置成功"})
 }
 
 // 管理员重置用户密码（bcrypt不可逆，只能重置不能查看）

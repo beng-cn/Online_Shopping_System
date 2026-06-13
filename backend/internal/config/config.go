@@ -11,16 +11,23 @@ import (
 var App *AppConfig
 
 type AppConfig struct {
-	Server ServerConfig `mapstructure:"server"`
-	MySQL  MySQLConfig  `mapstructure:"mysql"`
-	Redis  RedisConfig  `mapstructure:"redis"`
-	JWT    JWTConfig    `mapstructure:"jwt"`
-	Alipay AlipayConfig `mapstructure:"alipay"`
-	Cache  CacheConfig  `mapstructure:"cache"`
+	Server    ServerConfig    `mapstructure:"server"`
+	MySQL     MySQLConfig     `mapstructure:"mysql"`
+	Redis     RedisConfig     `mapstructure:"redis"`
+	JWT       JWTConfig       `mapstructure:"jwt"`
+	Alipay    AlipayConfig    `mapstructure:"alipay"`
+	Cache     CacheConfig     `mapstructure:"cache"`
+	FlashSale FlashSaleConfig `mapstructure:"flash_sale"` // 秒杀配置
 }
 
 type CacheConfig struct {
 	HotProductWarmUpLimit int `mapstructure:"hot_product_warm_up_limit"` // 预热热门商品数量
+}
+
+// FlashSaleConfig 秒杀模块配置（可通过yaml或环境变量覆盖）
+type FlashSaleConfig struct {
+	PaymentTimeoutHours int `mapstructure:"payment_timeout_hours"` // 支付超时时间（小时），默认2
+	CoolDownMinutes     int `mapstructure:"cooldown_minutes"`     // 冷却时间（分钟），默认2
 }
 
 type ServerConfig struct {
