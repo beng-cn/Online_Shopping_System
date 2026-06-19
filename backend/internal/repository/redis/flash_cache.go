@@ -16,7 +16,9 @@ import (
 type FlashCache interface {
 	// === 排队入场 ===
 	IncrQueueCount(flashSaleID uint) (int64, error)           // 原子递增排队计数，返回当前序号
+	DecrQueueCount(flashSaleID uint) (int64, error)           // 原子递减（入场被拒时回滚）
 	AddAdmittedUser(flashSaleID uint, userID uint) error      // 将用户添加到入场集合
+	RemoveAdmittedUser(flashSaleID uint, userID uint) error  // 移除用户入场资格（超时释放时调用）
 	IsUserAdmitted(flashSaleID uint, userID uint) (bool, error) // 检查用户是否已入场
 	GetQueueCount(flashSaleID uint) (int64, error)            // 获取当前排队人数
 
@@ -24,6 +26,10 @@ type FlashCache interface {
 	AtomicDeductStock(flashSaleID uint, userID uint) (int64, int64, error) // Lua原子扣减：返回(code, remaining)
 	RollbackDeduct(flashSaleID uint, userID uint) error                    // 回滚扣减（DB写入失败时调用）
 	GetRemainingStock(flashSaleID uint) (int64, error)                      // 查询剩余库存
+	SetFlashStock(flashSaleID uint, stock int64) error                     // 设置剩余库存（对账修正用）
+	SetFlashSoldOut(flashSaleID uint) error                                // 设置全局售罄标记（多实例共享）
+	IsFlashSoldOut(flashSaleID uint) (bool, error)                         // 检查全局售罄标记
+	DeleteFlashSoldOut(flashSaleID uint) error                             // 删除售罄标记（库存释放时调用）
 
 	// === 初始化与预热 ===
 	WarmUpStock(flashSaleID uint, stock int) error // 将秒杀库存预热到Redis
@@ -39,6 +45,10 @@ type FlashCache interface {
 	RemovePendingOrder(flashSaleID uint, userID uint) error              // 清除单条待处理记录
 	ScanAllPendingKeys() ([]string, error)                               // 扫描所有 flash:pending:* 的key
 	CleanPendingKey(key string) error                                    // 清理整个 pending key
+
+	// === 验证码 ===
+	SetCaptcha(captchaID, answer string, ttl time.Duration) error          // 存入验证码答案
+	GetAndDeleteCaptcha(captchaID string) (string, error)                  // 原子获取并删除验证码
 }
 
 type flashCache struct {
@@ -80,6 +90,24 @@ var atomicDeductScript = redis.NewScript(`
 	return {0, stock - 1}  -- 成功，返回剩余库存
 `)
 
+// ==================== Lua 原子回滚脚本 ====================
+var atomicRollbackScript = redis.NewScript(`
+	local stock_key = KEYS[1]
+	local user_key = KEYS[2]
+	local user_id = ARGV[1]
+
+	local is_member = redis.call('SISMEMBER', user_key, user_id)
+	if is_member == 0 then
+		return {0, 0}
+	end
+
+	redis.call('INCR', stock_key)
+	redis.call('SREM', user_key, user_id)
+
+	local stock = redis.call('GET', stock_key)
+	return {1, stock}
+`)
+
 // ==================== 排队入场 ====================
 
 // queueKey 生成排队计数器的Redis键名
@@ -94,9 +122,23 @@ func admittedKey(flashSaleID uint) string {
 
 // IncrQueueCount 原子递增排队计数，返回当前排队序号
 func (c *flashCache) IncrQueueCount(flashSaleID uint) (int64, error) {
-	count, err := c.client.Incr(c.ctx, queueKey(flashSaleID)).Result()
+	key := queueKey(flashSaleID)
+	count, err := c.client.Incr(c.ctx, key).Result()
 	if err != nil {
 		return 0, fmt.Errorf("排队计数递增失败: %w", err)
+	}
+	// 首次创建时设置 2 小时过期，防止活动异常结束时 key 永久残留
+	if count == 1 {
+		c.client.Expire(c.ctx, key, 2*time.Hour)
+	}
+	return count, nil
+}
+
+// DecrQueueCount 原子递减排队计数（入场被拒时释放名额）
+func (c *flashCache) DecrQueueCount(flashSaleID uint) (int64, error) {
+	count, err := c.client.Decr(c.ctx, queueKey(flashSaleID)).Result()
+	if err != nil {
+		return 0, fmt.Errorf("排队计数递减失败: %w", err)
 	}
 	return count, nil
 }
@@ -115,6 +157,11 @@ func (c *flashCache) AddAdmittedUser(flashSaleID uint, userID uint) error {
 // IsUserAdmitted 检查用户是否已获得入场资格
 func (c *flashCache) IsUserAdmitted(flashSaleID uint, userID uint) (bool, error) {
 	return c.client.SIsMember(c.ctx, admittedKey(flashSaleID), userID).Result()
+}
+
+// RemoveAdmittedUser 移除用户入场资格（超时释放库存时调用）
+func (c *flashCache) RemoveAdmittedUser(flashSaleID uint, userID uint) error {
+	return c.client.SRem(c.ctx, admittedKey(flashSaleID), userID).Err()
 }
 
 // GetQueueCount 获取当前排队人数
@@ -164,12 +211,19 @@ func (c *flashCache) AtomicDeductStock(flashSaleID uint, userID uint) (int64, in
 
 // RollbackDeduct 回滚扣减：恢复库存 + 移除用户资格
 func (c *flashCache) RollbackDeduct(flashSaleID uint, userID uint) error {
-	pipe := c.client.Pipeline()
-	pipe.Incr(c.ctx, stockKey(flashSaleID))
-	pipe.SRem(c.ctx, userSetKey(flashSaleID), userID)
-	_, err := pipe.Exec(c.ctx)
+	keys := []string{stockKey(flashSaleID), userSetKey(flashSaleID)}
+	args := []interface{}{userID}
+	result, err := atomicRollbackScript.Run(c.ctx, c.client, keys, args...).Result()
 	if err != nil {
-		return fmt.Errorf("回滚库存失败: %w", err)
+		return fmt.Errorf("回滚库存失败(Lua): %w", err)
+	}
+	vals, ok := result.([]interface{})
+	if !ok {
+		return fmt.Errorf("回滚脚本返回格式异常: %v", result)
+	}
+	code, _ := vals[0].(int64)
+	if code == 0 {
+		return fmt.Errorf("用户 %d 不在活动 %d 的已购集合中", userID, flashSaleID)
 	}
 	return nil
 }
@@ -182,13 +236,46 @@ func (c *flashCache) GetRemainingStock(flashSaleID uint) (int64, error) {
 	}
 	return val, err
 }
+// SetFlashStock 设置Redis 中剩余秒杀库存（对账修正用）
+func (c *flashCache) SetFlashStock(flashSaleID uint, stock int64) error {
+	return c.client.Set(c.ctx, stockKey(flashSaleID), stock, 48*time.Hour).Err()
+}
+
+
+// soldOutKey 生成全局售罄标记的 Redis 键名（多实例共享）
+func soldOutKey(flashSaleID uint) string {
+	return fmt.Sprintf("flash:soldout:%d", flashSaleID)
+}
+
+// SetFlashSoldOut 设置全局售罄标记（TTL 5分钟，防止 key 永久残留）
+func (c *flashCache) SetFlashSoldOut(flashSaleID uint) error {
+	return c.client.Set(c.ctx, soldOutKey(flashSaleID), "1", 5*time.Minute).Err()
+}
+
+// IsFlashSoldOut 检查全局售罄标记是否已设置
+func (c *flashCache) IsFlashSoldOut(flashSaleID uint) (bool, error) {
+	_, err := c.client.Get(c.ctx, soldOutKey(flashSaleID)).Result()
+	if err == redis.Nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// DeleteFlashSoldOut 删除全局售罄标记（库存释放时调用）
+func (c *flashCache) DeleteFlashSoldOut(flashSaleID uint) error {
+	return c.client.Del(c.ctx, soldOutKey(flashSaleID)).Err()
+}
 
 // ==================== 初始化与预热 ====================
 
 // WarmUpStock 将秒杀库存加载到Redis
 func (c *flashCache) WarmUpStock(flashSaleID uint, stock int) error {
 	key := stockKey(flashSaleID)
-	if err := c.client.Set(c.ctx, key, stock, 0).Err(); err != nil {
+	// 设置 48 小时过期（防止活动异常结束时 key 永久残留），足够覆盖任何合理秒杀时长
+	if err := c.client.Set(c.ctx, key, stock, 48*time.Hour).Err(); err != nil {
 		return fmt.Errorf("预热库存失败: %w", err)
 	}
 	// 清空上一轮的已抢购用户集合
@@ -207,6 +294,8 @@ func (c *flashCache) ClearFlashCache(flashSaleID uint) error {
 		queueKey(flashSaleID),
 		admittedKey(flashSaleID),
 		fmt.Sprintf("flash:info:%d", flashSaleID),
+		pendingKey(flashSaleID), // 清理防丢失记录，防止残留
+		soldOutKey(flashSaleID),
 	}
 	return c.client.Del(c.ctx, keys...).Err()
 }
@@ -243,8 +332,11 @@ func (c *flashCache) SetPendingOrder(flashSaleID uint, userID uint, orderNo stri
 	if err := c.client.HSet(c.ctx, key, strconv.Itoa(int(userID)), orderNo).Err(); err != nil {
 		return fmt.Errorf("设置防丢失记录失败: %w", err)
 	}
-	// 10分钟过期，超过此时间认为恢复无望
-	c.client.Expire(c.ctx, key, 10*time.Minute)
+	// 使用独立的 Expire 命令设置过期时间（非原子操作，但风险可控：
+	// 若HSET与Expire之间崩溃，pending key无TTL；下次重启RecoverPendingOrders会检测到订单已存在，仅清理Redis记录）
+	if err := c.client.Expire(c.ctx, key, 24*time.Hour).Err(); err != nil {
+		return fmt.Errorf("设置防丢失记录过期时间失败: %w", err)
+	}
 	return nil
 }
 
@@ -280,6 +372,31 @@ func (c *flashCache) ScanAllPendingKeys() ([]string, error) {
 // CleanPendingKey 删除整个 pending key
 func (c *flashCache) CleanPendingKey(key string) error {
 	return c.client.Del(c.ctx, key).Err()
+}
+
+// ==================== 验证码 ====================
+
+// captchaKey 生成验证码 Redis 键名
+func captchaKey(captchaID string) string {
+	return fmt.Sprintf("captcha:%s", captchaID)
+}
+
+// SetCaptcha 存储验证码答案，ttl 后自动过期
+func (c *flashCache) SetCaptcha(captchaID, answer string, ttl time.Duration) error {
+	return c.client.Set(c.ctx, captchaKey(captchaID), answer, ttl).Err()
+}
+
+// GetAndDeleteCaptcha 原子操作：获取并立即删除（防重复使用）
+func (c *flashCache) GetAndDeleteCaptcha(captchaID string) (string, error) {
+	key := captchaKey(captchaID)
+	pipe := c.client.TxPipeline()
+	getCmd := pipe.Get(c.ctx, key)
+	pipe.Del(c.ctx, key)
+	_, err := pipe.Exec(c.ctx)
+	if err != nil {
+		return "", err
+	}
+	return getCmd.Val(), nil
 }
 
 // ==================== 辅助序列化方法 ====================

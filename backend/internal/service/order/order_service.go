@@ -37,6 +37,7 @@ type orderService struct {
 	alipayService payment.AlipayService
 }
 
+// NewOrderService 创建订单服务实例
 func NewOrderService(
 	db *gorm.DB,
 	orderRepo mysql.OrderRepository,
@@ -57,6 +58,7 @@ func NewOrderService(
 	}
 }
 
+// CreateOrder 从购物车创建订单，含库存乐观锁扣减和事务保护
 func (s *orderService) CreateOrder(userID uint, req *request.CreateOrderRequest) (*response.OrderResponse, error) {
 	// 开启事务
 	tx := s.db.Begin()
@@ -151,6 +153,7 @@ func (s *orderService) CreateOrder(userID uint, req *request.CreateOrderRequest)
 	}, nil
 }
 
+// PayOrder 订单支付处理，校验归属并更新状态为已支付
 func (s *orderService) PayOrder(orderID uint, userID uint) error {
 	// 校验订单是否属于当前用户
 	order, err := s.orderRepo.GetByID(orderID)
@@ -289,6 +292,7 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 	return nil
 }
 
+// GetOrderList 分页获取用户订单列表
 func (s *orderService) GetOrderList(userID uint) ([]*response.OrderResponse, error) {
 	orders, err := s.orderRepo.GetByUserID(userID)
 	if err != nil {
@@ -363,6 +367,7 @@ func (s *orderService) GetOrderItems(orderID uint, userID uint) ([]*response.Ord
 	return resp, nil
 }
 
+// DeleteOrder 软删除订单（仅待支付状态可删）
 func (s *orderService) DeleteOrder(orderID uint, userID uint) error {
 	// 校验订单是否属于当前用户
 	order, err := s.orderRepo.GetByID(orderID)
@@ -404,6 +409,7 @@ func (s *orderService) DeleteOrder(orderID uint, userID uint) error {
 	return nil
 }
 
+// GetAliPayURL 生成支付宝支付链接
 func (s *orderService) GetAliPayURL(orderID uint, userID uint) (string, error) {
 	// 校验订单是否属于当前用户
 	order, err := s.orderRepo.GetByID(orderID)

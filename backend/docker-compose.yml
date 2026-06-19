@@ -48,8 +48,10 @@ services:
   redis:
     image: redis:7-alpine
     container_name: mall-redis
+    command: redis-server /usr/local/etc/redis/redis.conf
     volumes:
-      - redis_data:/data          # 数据持久化
+      - redis_data:/data          # RDB + AOF 持久化文件
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro  # 持久化配置文件
     networks:
       - mall-network
     restart: unless-stopped

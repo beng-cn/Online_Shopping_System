@@ -16,7 +16,7 @@ type User struct {
 	AdminPin  string         `gorm:"type:varchar(255);comment:'管理员PIN码，bcrypt加密，非管理员为NULL'" json:"-"`
 	Nickname  string         `json:"nickname"`
 	Email     string         `json:"email"`
-	Phone     string         `json:"phone"`
+	Phone     string         `gorm:"type:char(11)" json:"phone"`
 	Status    int            `gorm:"default:1;index" json:"status"`
 	RoleID    uint           `gorm:"default:2;comment:'角色ID:1=管理员,2=普通用户'" json:"role_id"`
 }

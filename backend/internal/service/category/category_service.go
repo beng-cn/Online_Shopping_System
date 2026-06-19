@@ -24,6 +24,7 @@ type categoryService struct {
 	categoryCache redis.CategoryCache
 }
 
+// NewCategoryService 创建分类服务实例
 func NewCategoryService(
 	categoryRepo mysql.CategoryRepository,
 	categoryCache redis.CategoryCache,
@@ -34,6 +35,7 @@ func NewCategoryService(
 	}
 }
 
+// CreateCategory 创建新分类
 func (s *categoryService) CreateCategory(req *request.CreateCategoryRequest) (*response.CategoryResponse, error) {
 	category := &entity.Category{
 		Name:     req.Name,
@@ -58,6 +60,7 @@ func (s *categoryService) CreateCategory(req *request.CreateCategoryRequest) (*r
 	}, nil
 }
 
+// UpdateCategory 修改分类信息
 func (s *categoryService) UpdateCategory(id uint, req *request.UpdateCategoryRequest) error {
 	category, err := s.categoryRepo.GetByID(id)
 	if err != nil {
@@ -78,6 +81,7 @@ func (s *categoryService) UpdateCategory(id uint, req *request.UpdateCategoryReq
 	return nil
 }
 
+// DeleteCategory 删除分类（含子分类和商品校验）
 func (s *categoryService) DeleteCategory(id uint) error {
 	// 检查分类下是否有商品
 	productCount, err := s.categoryRepo.CountProductsByCategoryID(id)

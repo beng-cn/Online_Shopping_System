@@ -15,7 +15,11 @@ import (
 	order2 "backend/internal/controller/order"
 	product2 "backend/internal/controller/product"
 	user2 "backend/internal/controller/user"
+	"backend/internal/pkg/bloom"
+	"backend/internal/pkg/breaker"
 	"backend/internal/pkg/jwt"
+	"backend/internal/pkg/localcache"
+	"backend/internal/pkg/semaphore"
 	"backend/internal/repository/mysql"
 	"backend/internal/repository/redis"
 	"backend/internal/router"
@@ -49,8 +53,12 @@ func InitApp() (*router.Router, error) {
 		return nil, err
 	}
 	productCache := redis.NewProductCache(client)
+	blacklist := jwt.NewRedisBlacklist(client)
 	categoryRepository := mysql.NewCategoryRepository(db)
-	productService := product.NewProductService(productRepository, productCache, categoryRepository)
+	filter := bloom.NewFilter()
+	dbBreaker := breaker.NewDefault()
+	dbLimiter := semaphore.NewDefault()
+	productService := product.NewProductService(productRepository, productCache, categoryRepository, filter, dbBreaker, dbLimiter)
 	productController := product2.NewProductController(productService)
 	cartRepository := mysql.NewCartRepository(db)
 	cartService := cart.NewCartService(cartRepository, productRepository)
@@ -72,6 +80,7 @@ func InitApp() (*router.Router, error) {
 	flashService := flash.NewFlashService(db, appConfig, flashRepository, flashCache, orderRepository, orderItemRepository, productRepository, productCache)
 	flashController := flash2.NewFlashController(flashService)
 	adminFlashController := flash2.NewAdminFlashController(flashService)
-	routerRouter := router.NewRouter(appConfig, jwtUtil, userController, productController, cartController, orderController, categoryController, adminController, flashController, adminFlashController, productService, categoryService, flashService)
+	localCache := localcache.NewDefault()
+	routerRouter := router.NewRouter(appConfig, jwtUtil, userController, productController, cartController, orderController, categoryController, adminController, flashController, adminFlashController, productService, categoryService, flashService, blacklist, localCache, dbBreaker, dbLimiter)
 	return routerRouter, nil
 }

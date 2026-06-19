@@ -35,6 +35,7 @@ type categoryCache struct {
 	ctx context.Context
 }
 
+// NewCategoryCache 创建分类缓存实例
 func NewCategoryCache(rdb *redis.Client) CategoryCache {
 	return &categoryCache{
 		rdb: rdb,

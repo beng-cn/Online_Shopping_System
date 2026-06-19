@@ -29,5 +29,10 @@ alipay:
   notify_url: http://127.0.0.1:8080/api/alipay/notify
   return_url: http://127.0.0.1:8080/api/alipay/success
 
+flash_sale:
+  payment_timeout_hours: 2
+  cooldown_minutes: 2
+  random_delay_max_ms: 0  # 排队入口随机延迟（毫秒），0=关闭，生产建议300-500
+
 cache:
   hot_product_warm_up_limit: 100

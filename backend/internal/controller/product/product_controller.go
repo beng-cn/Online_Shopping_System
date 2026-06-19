@@ -15,6 +15,7 @@ type ProductController struct {
 	productService product.ProductService
 }
 
+// NewProductController 创建商品控制器实例
 func NewProductController(productService product.ProductService) *ProductController {
 	return &ProductController{productService: productService}
 }
@@ -23,16 +24,15 @@ func NewProductController(productService product.ProductService) *ProductControl
 func (c *ProductController) GetProductList(ctx *gin.Context) {
 	var req request.ProductListRequest
 
-	// 从JSON请求体中解析参数
-	if err := ctx.ShouldBindJSON(&req); err != nil {
+	// 从 Query String 解析参数（符合 GET 语义）
+	if err := ctx.ShouldBindQuery(&req); err != nil {
 		log.Printf("❌ 参数绑定失败: %v", err)
 		response.Error(ctx, errors.NewParamError(err.Error()))
 		return
 	}
 
-	// 打印调试日志，确认参数是否正确接收
-	log.Printf("✅ 收到商品列表查询请求: keyword=%s, category_id=%s, page_num=%d, page_size=%d",
-		req.Keyword, req.CategoryID, req.PageNum, req.PageSize)
+	log.Printf("✅ 商品列表查询: keyword=%s, category_id=%s, page=%d, size=%d, sort=%s",
+		req.Keyword, req.CategoryID, req.PageNum, req.PageSize, req.Sort)
 
 	// 传递完整的req对象给Service层
 	resp, err := c.productService.GetProductList(&req)

@@ -13,6 +13,7 @@ type CategoryController struct {
 	categoryService category.CategoryService
 }
 
+// NewCategoryController 创建分类控制器实例
 func NewCategoryController(categoryService category.CategoryService) *CategoryController {
 	return &CategoryController{categoryService: categoryService}
 }

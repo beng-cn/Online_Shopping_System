@@ -9,8 +9,7 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
-// 初始化Redis连接（接收AppConfig参数）
-// 增加了连接验证和连接池配置
+// InitRedis 初始化 Redis 连接
 func InitRedis(cfg *config.AppConfig) (*redis.Client, error) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Redis.Host, cfg.Redis.Port),

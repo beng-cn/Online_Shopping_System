@@ -24,8 +24,7 @@ type visitor struct {
 	lastSeen time.Time
 }
 
-// NewRateLimiter 创建限流器实例
-// rate: 每秒填充的令牌数, burst: 桶容量（允许的突发请求数）
+// NewRateLimiter 创建 IP 级令牌桶限流器，rate=每秒令牌数 burst=桶容量
 func NewRateLimiter(rate, burst int) *RateLimiter {
 	rl := &RateLimiter{
 		visitors: make(map[string]*visitor),

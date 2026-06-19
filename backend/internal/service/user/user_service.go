@@ -30,6 +30,7 @@ type userService struct {
 	jwtUtil  *jwt.JWTUtil
 }
 
+// NewUserService 创建用户服务实例
 func NewUserService(userRepo mysql.UserRepository, jwtUtil *jwt.JWTUtil) UserService {
 	return &userService{
 		userRepo: userRepo,
@@ -37,6 +38,7 @@ func NewUserService(userRepo mysql.UserRepository, jwtUtil *jwt.JWTUtil) UserSer
 	}
 }
 
+// Register 用户注册，bcrypt 加密密码，校验用户名唯一
 func (s *userService) Register(req *request.RegisterRequest) error {
 	// 检查用户名是否已存在
 	_, err := s.userRepo.GetByUsername(req.Username)
@@ -68,6 +70,7 @@ func (s *userService) Register(req *request.RegisterRequest) error {
 	return s.userRepo.Create(user)
 }
 
+// Login 用户登录，校验密码并签发 JWT Token（含 JTI 唯一标识）
 func (s *userService) Login(req *request.LoginRequest) (*response.LoginResponse, error) {
 	// 查询用户
 	user, err := s.userRepo.GetByUsername(req.Username)
@@ -113,6 +116,7 @@ func (s *userService) Login(req *request.LoginRequest) (*response.LoginResponse,
 	}, nil
 }
 
+// UpdateUserInfo 更新用户个人信息（昵称/邮箱/手机）
 func (s *userService) UpdateUserInfo(userID uint, req *request.UpdateUserInfoRequest) error {
 	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
@@ -168,6 +172,7 @@ func (s *userService) GetUserInfo(userID uint) (*response.UserResponse, error) {
 	}, nil
 }
 
+// ListUsers 分页获取用户列表（管理员功能）
 func (s *userService) ListUsers(pageNum int, pageSize int, keyword string) (*response.PageResponse, error) {
 	// 参数校验和默认值处理
 	if pageNum <= 0 {
@@ -201,6 +206,7 @@ func (s *userService) ListUsers(pageNum int, pageSize int, keyword string) (*res
 	return response.NewPageResponse(userList, total, pageNum, pageSize), nil
 }
 
+// UpdateUserStatus 启用/禁用用户账号（管理员功能）
 func (s *userService) UpdateUserStatus(id uint, status int) error {
 	// 禁止禁用管理员
 	user, err := s.userRepo.GetByID(id)
@@ -217,6 +223,7 @@ func (s *userService) UpdateUserStatus(id uint, status int) error {
 	return s.userRepo.UpdateStatus(id, status)
 }
 
+// DeleteUser 软删除用户（管理员功能）
 func (s *userService) DeleteUser(id uint) error {
 	// 禁止删除管理员
 	user, err := s.userRepo.GetByID(id)

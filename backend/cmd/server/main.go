@@ -9,9 +9,15 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"backend/internal/pkg/env"
 )
 
 func main() {
+	// 🔴 第一步：环境变量门禁校验（敏感信息零硬编码）
+	// 在加载任何配置之前，先检查所有密码/密钥是否已通过环境变量注入
+	env.ValidateSecrets()
+
 	router, err := InitApp()
 	if err != nil {
 		panic(fmt.Sprintf("应用初始化失败: %v", err))
@@ -24,12 +30,17 @@ func main() {
 				log.Printf("⚠️ 启动后初始化发生panic: %v", r)
 			}
 		}()
-		// 延迟1秒确保数据库和Redis连接完全就绪
-		time.Sleep(1 * time.Second)
+		// 延迟3秒确保数据库和Redis连接完全就绪
+		time.Sleep(3 * time.Second)
 
 		// 预热分类缓存（全量）
 		if err := router.CategoryService.WarmUpAllCategories(); err != nil {
 			log.Printf("⚠️ 分类缓存预热失败: %v", err)
+		}
+
+		// 初始化布隆过滤器（从数据库加载所有产品ID）
+		if err := router.ProductService.InitBloomFilter(); err != nil {
+			log.Printf("⚠️ 布隆过滤器初始化失败: %v", err)
 		}
 
 		// 使用配置的数量预热热门商品
@@ -41,8 +52,69 @@ func main() {
 			log.Printf("⚠️ 热门商品缓存预热失败: %v", err)
 		}
 
-		// 秒杀崩溃恢复：处理上次非正常退出遗留的防丢失记录
+		// 秒杀崩溃恢复
 		router.FlashService.RecoverPendingOrders()
+	}()
+
+	// 秒杀自动预热扫描器（每30秒检查一次即将开始的活动）
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ 秒杀自动预热发生panic: %v", r)
+			}
+		}()
+		time.Sleep(5 * time.Second)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			router.FlashService.AutoWarmUp()
+		}
+	}()
+
+	// 用户限流器定期清理（每5分钟清理超过30分钟未活动的用户桶，防止内存泄漏）
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ 限流器清理发生panic: %v", r)
+			}
+		}()
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			router.UserSnatchLimiter.CleanupExpired(30 * time.Minute)
+		}
+	}()
+
+	// 秒杀库存对账器（每1小时执行一次，对比 Redis 与 DB 数据一致性）
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ 秒杀对账器发生panic: %v", r)
+			}
+		}()
+		time.Sleep(60 * time.Second) // 延迟1分钟，确保服务完全就绪
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			router.FlashService.ReconcileStock()
+		}
+	}()
+
+	// 布隆过滤器定时重建（每1小时全量重建，清理已删除产品的残留ID）
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ 布隆过滤器定时重建发生panic: %v", r)
+			}
+		}()
+		time.Sleep(2 * time.Hour) // 首次重建延迟2小时（等启动时的首次加载完成后再周期性重建）
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := router.ProductService.InitBloomFilter(); err != nil {
+				log.Printf("⚠️ 布隆过滤器定时重建失败: %v", err)
+			}
+		}
 	}()
 
 	// 秒杀超时订单扫描器（每30秒执行一次）

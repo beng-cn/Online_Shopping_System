@@ -10,9 +10,12 @@ import (
 	productCtrl "backend/internal/controller/product"
 	userCtrl "backend/internal/controller/user"
 	"backend/internal/middleware"
+	"backend/internal/pkg/breaker"
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/flashlimiter"
 	"backend/internal/pkg/jwt"
+	"backend/internal/pkg/localcache"
+	"backend/internal/pkg/semaphore"
 	"backend/internal/service/category"
 	"backend/internal/service/flash"
 	"backend/internal/service/product"
@@ -40,8 +43,14 @@ type Router struct {
 	CategoryService      category.CategoryService
 	FlashService         flash.FlashService
 	UserSnatchLimiter    *flashlimiter.UserRateLimiter
+	TokenBlacklist       jwt.TokenBlacklist
+	// 故障处理基础设施
+	LocalCache *localcache.Cache          // L1 本地缓存
+	DBBreaker  *breaker.CircuitBreaker    // 数据库熔断器
+	DBLimiter  *semaphore.Limiter         // 数据库并发信号量
 }
 
+// NewRouter 创建路由管理器，注入所有依赖并初始化 per-user 限流器
 func NewRouter(
 	cfg *config.AppConfig,
 	jwtUtil *jwt.JWTUtil,
@@ -56,6 +65,10 @@ func NewRouter(
 	productService product.ProductService,
 	categoryService category.CategoryService,
 	flashService flash.FlashService,
+	blacklist jwt.TokenBlacklist,
+	localCache *localcache.Cache,
+	dbBreaker *breaker.CircuitBreaker,
+	dbLimiter *semaphore.Limiter,
 ) *Router {
 	snatchLimiter := flashlimiter.NewUserRateLimiter(1, 1)
 	flashService.SetUserLimiter(snatchLimiter)
@@ -75,14 +88,20 @@ func NewRouter(
 		CategoryService:      categoryService,
 		FlashService:         flashService,
 		UserSnatchLimiter:    snatchLimiter,
+		TokenBlacklist:       blacklist,
+		LocalCache:           localCache,
+		DBBreaker:            dbBreaker,
+		DBLimiter:            dbLimiter,
 	}
 }
 
+// Setup 组装 Gin 引擎，注册中间件链和全部路由（公开/需登录/管理员三组）
 func (r *Router) Setup() *gin.Engine {
 	engine := gin.New()
 	engine.SetTrustedProxies([]string{"127.0.0.1", "::1"})
 
 	engine.Use(gin.Logger())
+	engine.Use(middleware.Trace()) // 请求追踪：为每个请求注入唯一 Request ID
 	engine.Use(middleware.Cors())
 	engine.Use(CustomRecovery())
 
@@ -99,7 +118,7 @@ func (r *Router) Setup() *gin.Engine {
 	engine.Static("/uploads", "./uploads")
 
 	// === 公开接口（无需登录）===
-	public := engine.Group("/api")
+	public := engine.Group("/api/v1")
 	{
 		public.POST("/user/register", r.UserController.Register)
 		public.POST("/user/login", r.UserController.Login)
@@ -107,7 +126,7 @@ func (r *Router) Setup() *gin.Engine {
 
 		productGroup := public.Group("/product")
 		{
-			productGroup.POST("/list", r.ProductController.GetProductList)
+			productGroup.GET("/list", r.ProductController.GetProductList)
 			productGroup.GET("/:id", r.ProductController.GetProductDetail)
 			productGroup.GET("/category/parents", r.CategoryController.GetParentCategories)
 			productGroup.GET("/category/children", r.CategoryController.GetChildCategories)
@@ -121,8 +140,8 @@ func (r *Router) Setup() *gin.Engine {
 	}
 
 	// === 需登录接口 ===
-	auth := engine.Group("/api/auth")
-	auth.Use(middleware.Auth(r.JWTUtil))
+	auth := engine.Group("/api/v1/auth")
+	auth.Use(middleware.Auth(r.JWTUtil, r.TokenBlacklist))
 	{
 		auth.PUT("/user/info", r.UserController.UpdateUserInfo)
 		auth.GET("/user/info", r.UserController.GetUserInfo)
@@ -146,6 +165,7 @@ func (r *Router) Setup() *gin.Engine {
 
 		flashAuthGroup := auth.Group("/flash")
 		{
+			flashAuthGroup.GET("/captcha", r.FlashController.GenerateCaptcha)  // 验证码
 			flashAuthGroup.POST("/enter", r.FlashController.EnterFlashSale)
 			flashAuthGroup.POST("/snatch", r.FlashController.SnatchFlashSale)
 			flashAuthGroup.GET("/orders", r.FlashController.GetUserFlashOrders)
@@ -153,8 +173,8 @@ func (r *Router) Setup() *gin.Engine {
 	}
 
 	// === 管理员接口 ===
-	adminGroup := engine.Group("/api/admin")
-	adminGroup.Use(middleware.AdminAuth(r.JWTUtil))
+	adminGroup := engine.Group("/api/v1/admin")
+	adminGroup.Use(middleware.AdminAuth(r.JWTUtil, r.TokenBlacklist))
 	{
 		adminGroup.POST("/product", r.AdminController.CreateProduct)
 		adminGroup.PUT("/product/:id", r.AdminController.UpdateProduct)
@@ -189,6 +209,7 @@ func (r *Router) Setup() *gin.Engine {
 	return engine
 }
 
+// CustomRecovery 全局 panic 恢复中间件，打印完整堆栈并返回统一错误响应
 func CustomRecovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
@@ -200,7 +221,7 @@ func CustomRecovery() gin.HandlerFunc {
 				log.Printf("【===============】\n\n")
 
 				if !c.Writer.Written() {
-					c.JSON(http.StatusOK, gin.H{
+					c.JSON(http.StatusInternalServerError, gin.H{
 						"code":    errors.CodeServerError,
 						"message": "服务器内部错误",
 						"data":    nil,

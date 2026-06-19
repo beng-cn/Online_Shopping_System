@@ -48,23 +48,27 @@ func (e *Error) Error() string {
 	return e.Message
 }
 
-// 构造函数
+// New 创建带业务错误码的自定义错误，code 为业务错误码，message 为用户可读描述
 func New(code int, message string) *Error {
 	return &Error{Code: code, Message: message}
 }
 
+// NewParamError 创建参数校验错误（code=1001）
 func NewParamError(message string) *Error {
 	return &Error{Code: CodeParamError, Message: message}
 }
 
+// Wrap 包装原始错误为自定义错误类型，不泄露底层实现细节
 func Wrap(err error, message string) *Error {
 	return &Error{Code: CodeServerError, Message: message, Err: err}
 }
 
+// Wrapf 格式化包装错误，支持 printf 风格的错误消息
 func Wrapf(err error, format string, args ...interface{}) *Error {
 	return &Error{Code: CodeServerError, Message: fmt.Sprintf(format, args...), Err: err}
 }
 
+// Errorf 创建格式化自定义错误
 func Errorf(code int, format string, args ...interface{}) *Error {
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
 }

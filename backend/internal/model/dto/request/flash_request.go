@@ -27,5 +27,7 @@ type FlashEnterRequest struct {
 
 // 秒杀抢购请求（用户端）
 type FlashSnatchRequest struct {
-	FlashSaleID uint `json:"flash_sale_id" binding:"required,min=1" msg:"请指定秒杀活动"`
+	FlashSaleID   uint   `json:"flash_sale_id" binding:"required,min=1" msg:"请指定秒杀活动"`
+	CaptchaID     string `json:"captcha_id" binding:"required" msg:"请提供验证码ID"`
+	CaptchaAnswer string `json:"captcha_answer" binding:"required" msg:"请输入验证码"`
 }

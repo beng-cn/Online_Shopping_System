@@ -23,7 +23,7 @@ type alipayService struct {
 	config *config.AlipayConfig
 }
 
-// 创建支付宝支付服务实例
+// NewAlipayService 创建支付宝支付服务实例，加载应用私钥和支付宝公钥
 func NewAlipayService(cfg *config.AppConfig) (AlipayService, error) {
 	aliConfig := &cfg.Alipay
 

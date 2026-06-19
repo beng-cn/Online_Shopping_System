@@ -20,6 +20,7 @@ type cartService struct {
 	productRepo mysql.ProductRepository
 }
 
+// NewCartService 创建购物车服务实例
 func NewCartService(
 	cartRepo mysql.CartRepository,
 	productRepo mysql.ProductRepository,
@@ -30,6 +31,7 @@ func NewCartService(
 	}
 }
 
+// AddToCart 添加商品到购物车，已存在则累加数量
 func (s *cartService) AddToCart(userID uint, req *request.AddToCartRequest) error {
 	// 校验商品是否存在且上架
 	product, err := s.productRepo.GetByID(req.ProductID)
@@ -70,6 +72,7 @@ func (s *cartService) AddToCart(userID uint, req *request.AddToCartRequest) erro
 	}
 }
 
+// UpdateCartQuantity 修改购物车商品数量
 func (s *cartService) UpdateCartQuantity(userID uint, cartID uint, quantity int) error {
 	// 校验购物车记录是否属于当前用户
 	cart, err := s.cartRepo.GetByID(cartID)
@@ -93,6 +96,7 @@ func (s *cartService) UpdateCartQuantity(userID uint, cartID uint, quantity int)
 	return s.cartRepo.Update(cart)
 }
 
+// DeleteCartItem 删除购物车中的单品
 func (s *cartService) DeleteCartItem(userID uint, cartID uint) error {
 	// 校验购物车记录是否属于当前用户
 	cart, err := s.cartRepo.GetByID(cartID)
@@ -106,6 +110,7 @@ func (s *cartService) DeleteCartItem(userID uint, cartID uint) error {
 	return s.cartRepo.Delete(cartID)
 }
 
+// GetCartList 获取用户购物车列表
 func (s *cartService) GetCartList(userID uint) ([]*response.CartResponse, error) {
 	carts, err := s.cartRepo.GetByUserID(userID)
 	if err != nil {

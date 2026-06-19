@@ -23,10 +23,12 @@ type userRepository struct {
 	db *gorm.DB
 }
 
+// NewUserRepository 创建用户仓储实例
 func NewUserRepository(db *gorm.DB) UserRepository {
 	return &userRepository{db: db}
 }
 
+// Create 新增用户
 func (r *userRepository) Create(user *entity.User) error {
 	if err := r.db.Create(user).Error; err != nil {
 		return errors.Wrap(err, "创建用户失败!")
@@ -34,6 +36,7 @@ func (r *userRepository) Create(user *entity.User) error {
 	return nil
 }
 
+// Update 更新用户信息
 func (r *userRepository) Update(user *entity.User) error {
 	if err := r.db.Model(user).Updates(user).Error; err != nil {
 		return errors.Wrap(err, "更新用户失败!")
@@ -41,6 +44,7 @@ func (r *userRepository) Update(user *entity.User) error {
 	return nil
 }
 
+// UpdateStatus 更新用户状态（启用/禁用）
 func (r *userRepository) UpdateStatus(id uint, status int) error {
 	result := r.db.Model(&entity.User{}).Where("id = ?", id).Update("status", status)
 	if result.Error != nil {
@@ -52,6 +56,7 @@ func (r *userRepository) UpdateStatus(id uint, status int) error {
 	return nil
 }
 
+// Delete 软删除用户
 func (r *userRepository) Delete(id uint) error {
 	result := r.db.Delete(&entity.User{}, id)
 	if result.Error != nil {
@@ -63,6 +68,7 @@ func (r *userRepository) Delete(id uint) error {
 	return nil
 }
 
+// GetByID 根据主键查询用户
 func (r *userRepository) GetByID(id uint) (*entity.User, error) {
 	var user entity.User
 	if err := r.db.First(&user, id).Error; err != nil {
@@ -74,6 +80,7 @@ func (r *userRepository) GetByID(id uint) (*entity.User, error) {
 	return &user, nil
 }
 
+// GetByUsername 根据用户名查询用户（含软删除的用于注册校验）
 func (r *userRepository) GetByUsername(username string) (*entity.User, error) {
 	var user entity.User
 	if err := r.db.Where("username = ?", username).First(&user).Error; err != nil {
@@ -97,6 +104,7 @@ func (r *userRepository) GetByPhone(phone string) (*entity.User, error) {
 	return &user, nil
 }
 
+// List 分页查询用户列表
 func (r *userRepository) List(pageNum, pageSize int, keyword string) ([]*entity.User, int64, error) {
 	var users []*entity.User
 	var total int64
@@ -118,6 +126,7 @@ func (r *userRepository) List(pageNum, pageSize int, keyword string) ([]*entity.
 	return users, total, nil
 }
 
+// WithTx 事务传播：返回绑定事务的仓储实例
 func (r *userRepository) WithTx(tx *gorm.DB) UserRepository {
 	return &userRepository{db: tx}
 }

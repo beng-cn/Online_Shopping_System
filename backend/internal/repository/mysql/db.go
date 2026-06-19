@@ -2,6 +2,8 @@ package mysql
 
 import (
 	"backend/internal/config"
+	"backend/internal/pkg/logger"
+	"os"
 	"time"
 
 	"gorm.io/driver/mysql"
@@ -11,7 +13,20 @@ import (
 // 初始化数据库连接（接收AppConfig参数）
 func InitDB(cfg *config.AppConfig) (*gorm.DB, error) {
 	dsn := cfg.MySQL.DSN()
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+
+	// 根据运行环境选择慢查询阈值
+	env := os.Getenv("GO_ENV")
+	if env == "" {
+		env = "dev"
+	}
+	slowThreshold := logger.RecommendThreshold(env)
+
+	// 创建 GORM Logger 插件：慢查询自动埋点
+	gormLog := logger.NewSlowQueryLogger(slowThreshold)
+
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
+		Logger: gormLog, // 使用自定义慢查询日志记录器
+	})
 	if err != nil {
 		return nil, err
 	}

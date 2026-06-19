@@ -26,6 +26,7 @@ type AdminController struct {
 	categoryService category.CategoryService
 }
 
+// NewAdminController 创建管理员控制器实例
 func NewAdminController(
 	productService product.ProductService,
 	categoryService category.CategoryService,

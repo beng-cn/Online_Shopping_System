@@ -14,12 +14,13 @@ CREATE TABLE `users` (
   `admin_pin` varchar(255) DEFAULT NULL COMMENT '管理员PIN码(bcrypt加密)，非管理员为NULL',
   `nickname` varchar(50) DEFAULT '',
   `email` varchar(100) DEFAULT '',
-  `phone` varchar(20) DEFAULT '',
+  `phone` char(11) DEFAULT '',
   `status` int NOT NULL DEFAULT '1',
   `role_id` int unsigned NOT NULL DEFAULT '2',
   PRIMARY KEY (`id`),
   UNIQUE KEY `idx_users_username` (`username`),
   KEY `idx_users_deleted_at` (`deleted_at`),
+  KEY `idx_users_email` (`email`),
   KEY `idx_users_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -54,9 +55,10 @@ CREATE TABLE `products` (
   `version` int NOT NULL DEFAULT '0',
   PRIMARY KEY (`id`),
   KEY `idx_products_deleted_at` (`deleted_at`),
-  KEY `idx_products_category_status` (`category_id`,`status`),
+  KEY `idx_products_cat_status_sales` (`category_id`,`status`,`sales`),
   KEY `idx_products_sales` (`sales` DESC),
   KEY `idx_products_name_like` (`name`(20)),
+  FULLTEXT KEY `ft_product_search` (`name`,`keywords`),
   CONSTRAINT `fk_products_category_id` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -89,8 +91,10 @@ CREATE TABLE `orders` (
   `status` int NOT NULL DEFAULT '0' COMMENT '0=待支付 1=已支付 2=已取消 3=待释放(秒杀冷却期)',
   PRIMARY KEY (`id`),
   UNIQUE KEY `idx_orders_order_no` (`order_no`),
+  UNIQUE KEY `idx_orders_flash_user` (`flash_sale_id`,`user_id`) COMMENT '防止同一用户在同一秒杀活动中重复下单',
   KEY `idx_orders_deleted_at` (`deleted_at`),
   KEY `idx_orders_user_created` (`user_id`,`created_at` DESC),
+  KEY `idx_orders_flash_status_time` (`flash_sale_id`,`status`,`created_at`),
   CONSTRAINT `fk_orders_user_id` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

@@ -6,6 +6,7 @@ import (
 	"backend/internal/pkg/response"
 	"backend/internal/service/flash"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -79,6 +80,22 @@ func (c *FlashController) SnatchFlashSale(ctx *gin.Context) {
 		return
 	}
 	response.Success(ctx, resp)
+}
+
+// GenerateCaptcha 生成验证码（人机验证）
+// GET /api/v1/auth/flash/captcha
+func (c *FlashController) GenerateCaptcha(ctx *gin.Context) {
+	captcha, err := c.flashService.GenerateCaptcha()
+	if err != nil {
+		response.Error(ctx, err)
+		return
+	}
+	response.Success(ctx, gin.H{
+		"captcha_id":    captcha.ID,
+		"captcha_image": captcha.ImageB64,
+		"expires_in":    120,
+	})
+	_ = time.Now // 预留给未来时间戳校验
 }
 
 // GetUserFlashOrders 获取用户秒杀订单列表

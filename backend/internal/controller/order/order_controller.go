@@ -17,6 +17,7 @@ type OrderController struct {
 	alipayService payment.AlipayService
 }
 
+// NewOrderController 创建订单控制器实例
 func NewOrderController(
 	orderService order.OrderService,
 	alipayService payment.AlipayService, // 新增参数

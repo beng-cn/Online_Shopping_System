@@ -14,6 +14,7 @@ type CartController struct {
 	cartService cart.CartService
 }
 
+// NewCartController 创建购物车控制器实例
 func NewCartController(cartService cart.CartService) *CartController {
 	return &CartController{cartService: cartService}
 }

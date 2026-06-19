@@ -3,7 +3,7 @@ import { ElMessage } from 'element-plus'
 
 // 创建 Axios 实例，后端在 8080，Vite 代理已配置
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: '/api/v1',
   timeout: 15000,
 })
 

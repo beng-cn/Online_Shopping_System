@@ -15,7 +15,7 @@ type Response struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
-// 成功响应
+// Success 统一成功响应，code=0，data 为业务数据
 func Success(ctx *gin.Context, data interface{}) {
 	ctx.JSON(http.StatusOK, Response{
 		Code:    errors.CodeSuccess,
@@ -24,7 +24,7 @@ func Success(ctx *gin.Context, data interface{}) {
 	})
 }
 
-// 错误处理
+// Error 统一错误处理，根据 *errors.Error 类型提取 code 和 message
 func Error(ctx *gin.Context, err error) {
 	code := errors.CodeServerError
 	msg := "服务器内部错误"

@@ -19,7 +19,11 @@ import (
 	"backend/internal/router"
 
 	// 给Service层的包加 Svc 后缀别名
+	"backend/internal/pkg/bloom"
+	"backend/internal/pkg/breaker"
 	"backend/internal/pkg/jwt"
+	"backend/internal/pkg/localcache"
+	"backend/internal/pkg/semaphore"
 	cartSvc "backend/internal/service/cart"
 	categorySvc "backend/internal/service/category"
 	flashSvc "backend/internal/service/flash"
@@ -31,6 +35,7 @@ import (
 	"github.com/google/wire"
 )
 
+// InitApp Wire 编译时依赖注入入口，按序组装 Config→DB→Cache→Repo→Service→Controller→Router 全链路
 func InitApp() (*router.Router, error) {
 	wire.Build(
 		// 配置加载
@@ -41,7 +46,12 @@ func InitApp() (*router.Router, error) {
 		redis.InitRedis,
 
 		// 工具类
-		jwt.NewJWTUtil,
+			jwt.NewJWTUtil,
+			jwt.NewRedisBlacklist,  // JWT 黑名单
+			bloom.NewFilter,        // 布隆过滤器（防缓存穿透）
+			localcache.NewDefault,  // L1 本地缓存
+			breaker.NewDefault,     // 数据库熔断器
+			semaphore.NewDefault,   // 数据库并发信号量
 
 		// MySQL Repository
 		mysql.NewUserRepository,

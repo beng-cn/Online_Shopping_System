@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+// UserLimiter 用户限流器接口（导出供测试 Mock 和外部依赖注入）
+type UserLimiter interface {
+	Allow(userID uint) bool
+}
+
 // UserRateLimiter 秒杀专用 per-user 内存限流器
 // 基于令牌桶算法，每个用户独立计数，纯内存操作（零Redis开销）
 type UserRateLimiter struct {

@@ -104,16 +104,22 @@
     <el-dialog
       v-model="queueDialogVisible"
       title="排队入场"
-      width="450px"
+      width="480px"
       :close-on-click-modal="false"
       :show-close="true"
     >
       <div class="queue-dialog-body">
         <el-result
-          v-if="admitted"
+          v-if="admitted && !captchaId"
           icon="success"
           title="入场成功"
-          sub-title="请点击下方按钮立即抢购！"
+          sub-title="正在加载验证码..."
+        />
+        <el-result
+          v-else-if="admitted && captchaId"
+          icon="success"
+          title="入场成功"
+          sub-title="请输入验证码完成抢购"
         />
         <el-result
           v-else
@@ -125,14 +131,43 @@
         <div v-if="enterQueueNumber" class="queue-number">
           您的排队序号：<strong>{{ enterQueueNumber }}</strong>
         </div>
+
+        <!-- 验证码区域（入场成功后显示） -->
+        <div v-if="admitted && captchaId" class="captcha-area">
+          <div class="captcha-image-wrapper">
+            <img
+              :src="captchaImage"
+              alt="验证码"
+              class="captcha-img"
+              @click="fetchCaptcha"
+            />
+            <el-button
+              text
+              type="primary"
+              size="small"
+              @click="fetchCaptcha"
+              :loading="captchaLoading"
+            >
+              换一张
+            </el-button>
+          </div>
+          <el-input
+            v-model="captchaAnswer"
+            placeholder="请输入验证码（不区分大小写）"
+            maxlength="4"
+            class="captcha-input"
+            @keyup.enter="handleSnatch"
+          />
+        </div>
       </div>
 
       <template #footer>
-        <el-button @click="queueDialogVisible = false">关闭</el-button>
+        <el-button @click="closeQueueDialog">关闭</el-button>
         <el-button
           v-if="admitted"
           type="danger"
           :loading="snatching"
+          :disabled="!captchaId || captchaAnswer.length < 4"
           @click="handleSnatch"
         >
           立即抢购
@@ -161,6 +196,12 @@ const queueDialogVisible = ref(false)
 const admitted = ref(false)
 const enterMessage = ref('')
 const enterQueueNumber = ref(0)
+
+// 验证码
+const captchaId = ref('')
+const captchaImage = ref('')
+const captchaAnswer = ref('')
+const captchaLoading = ref(false)
 
 // 倒计时定时器
 let timer = null
@@ -244,10 +285,41 @@ function countdownText(item) {
   return `${pad(minutes)}:${pad(seconds)}`
 }
 
+// 获取验证码
+async function fetchCaptcha() {
+  captchaLoading.value = true
+  try {
+    const res = await api.get('/auth/flash/captcha')
+    const data = res.data
+    captchaId.value = data.captcha_id
+    captchaImage.value = data.captcha_image
+    captchaAnswer.value = ''
+  } catch (e) {
+    ElMessage.error('验证码加载失败，请刷新重试')
+  } finally {
+    captchaLoading.value = false
+  }
+}
+
+// 关闭弹窗并重置状态
+function closeQueueDialog() {
+  queueDialogVisible.value = false
+  captchaId.value = ''
+  captchaImage.value = ''
+  captchaAnswer.value = ''
+  admitted.value = false
+  enterMessage.value = ''
+  enterQueueNumber.value = 0
+}
+
 // 排队入场
 async function handleEnter(item) {
   entering.value = item.id
   currentFlashId.value = item.id
+  // 重置验证码状态
+  captchaId.value = ''
+  captchaImage.value = ''
+  captchaAnswer.value = ''
   try {
     const res = await api.post('/auth/flash/enter', { flash_sale_id: item.id })
     const data = res.data
@@ -257,6 +329,8 @@ async function handleEnter(item) {
 
     if (data.admitted) {
       ElMessage.success('入场成功，请立即抢购！')
+      // 自动加载验证码
+      fetchCaptcha()
     } else {
       ElMessage.warning(data.message || '排队中，请耐心等待')
     }
@@ -272,21 +346,32 @@ async function handleEnter(item) {
 // 发起抢购
 async function handleSnatch() {
   if (!currentFlashId.value) return
+  if (!captchaId.value || captchaAnswer.value.length < 4) {
+    ElMessage.warning('请输入4位验证码')
+    return
+  }
   snatching.value = true
   try {
-    const res = await api.post('/auth/flash/snatch', { flash_sale_id: currentFlashId.value })
+    const res = await api.post('/auth/flash/snatch', {
+      flash_sale_id: currentFlashId.value,
+      captcha_id: captchaId.value,
+      captcha_answer: captchaAnswer.value.trim()
+    })
     const data = res.data
 
     if (data.success) {
       ElMessage.success(`抢购成功！订单号：${data.order_no}`)
-      queueDialogVisible.value = false
+      closeQueueDialog()
       // 刷新秒杀列表以更新库存
       fetchFlashList()
     } else {
       ElMessage.warning(data.message || '抢购失败')
+      // 抢购失败刷新验证码（旧验证码可能已被消费）
+      fetchCaptcha()
     }
   } catch (e) {
-    // 错误已由拦截器处理
+    // 错误已由拦截器处理，刷新验证码
+    fetchCaptcha()
   } finally {
     snatching.value = false
   }
@@ -462,5 +547,36 @@ onUnmounted(() => {
   margin-top: 12px;
   font-size: 16px;
   color: #303133;
+}
+
+.captcha-area {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f5f7fa;
+  border-radius: 8px;
+}
+
+.captcha-image-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.captcha-img {
+  height: 50px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  cursor: pointer;
+  background: #fff;
+}
+
+.captcha-img:hover {
+  border-color: #409eff;
+}
+
+.captcha-input {
+  width: 100%;
 }
 </style>

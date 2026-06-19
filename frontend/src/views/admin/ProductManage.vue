@@ -239,7 +239,7 @@ async function fetchProducts() {
     if (searchForm.category_id) params.category_id = searchForm.category_id
     if (searchForm.status !== null && searchForm.status !== '') params.status = searchForm.status
 
-    const res = await api.post('/product/list', params)
+    const res = await api.get('/product/list', { params })
     const data = res.data
     productList.value = data.list || []
     pagination.total = data.total || 0

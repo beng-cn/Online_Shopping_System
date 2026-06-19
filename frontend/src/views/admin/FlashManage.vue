@@ -231,10 +231,12 @@ async function searchProducts(query) {
   }
   productSearchLoading.value = true
   try {
-    const res = await api.post('/product/list', {
-      keyword: query,
-      page_num: 1,
-      page_size: 20
+    const res = await api.get('/product/list', {
+      params: {
+        keyword: query,
+        page_num: 1,
+        page_size: 20
+      }
     })
     productOptions.value = res.data?.list || []
   } catch (e) {

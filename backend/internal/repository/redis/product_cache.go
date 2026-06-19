@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -23,7 +24,27 @@ const (
 	productNilExpire = 1 * time.Minute
 	// 每次访问续期时长
 	productRenewDuration = 5 * time.Minute
+	// 分布式互斥锁过期时间（防止锁死）
+	productLockExpire = 5 * time.Second
+	// 互斥锁等待重试间隔
+	productLockRetryInterval = 50 * time.Millisecond
+	// 互斥锁最大等待时间
+	productLockMaxWait = 2 * time.Second
 )
+
+// cacheTTLWithJitter 在基础 TTL 上叠加随机抖动（±20%），防止缓存雪崩
+//
+// 原理：如果所有缓存 Key 使用相同的过期时间，同一时刻大量 Key 同时过期会导致
+// 数据库瞬间承受巨大压力。通过随机抖动，将过期时间分散在 [80%*TTL, 120%*TTL] 区间。
+func cacheTTLWithJitter(base time.Duration) time.Duration {
+	jitter := time.Duration(float64(base) * 0.2 * (rand.Float64()*2 - 1)) // ±20%
+	return base + jitter
+}
+
+// nilCacheTTL 空值缓存 TTL 也加抖动（防同时过期导致穿透风暴）
+func nilCacheTTL() time.Duration {
+	return cacheTTLWithJitter(productNilExpire)
+}
 
 type ProductCache interface {
 	GetProduct(id uint) (*entity.Product, error)
@@ -32,7 +53,11 @@ type ProductCache interface {
 	GetProductList(keyword string, categoryID string) ([]*entity.Product, error)
 	SetProductList(keyword string, categoryID string, products []*entity.Product) error
 	ClearAllProductList() error
-	WarmUpHotProducts(productRepo mysql.ProductRepository, limit int) error // 新增预热方法
+	WarmUpHotProducts(productRepo mysql.ProductRepository, limit int) error // 预热方法
+	// 分布式互斥锁（防缓存击穿）
+	TryLockProduct(id uint) bool
+	UnlockProduct(id uint)
+	WaitAndRetry(id uint) (*entity.Product, bool)
 }
 
 type productCache struct {
@@ -40,6 +65,7 @@ type productCache struct {
 	ctx context.Context
 }
 
+// NewProductCache 创建商品缓存实例
 func NewProductCache(rdb *redis.Client) ProductCache {
 	return &productCache{
 		rdb: rdb,
@@ -95,22 +121,23 @@ func (c *productCache) GetProduct(id uint) (*entity.Product, error) {
 	return &product, nil
 }
 
-// SetProduct 增强版：支持空值缓存
+// SetProduct 增强版：支持空值缓存 + TTL随机抖动防雪崩
 func (c *productCache) SetProduct(product *entity.Product) error {
 	key := c.getProductKey(product.ID)
 
 	// 空值缓存（当数据库查询不到时，缓存"nil"标记）
 	if product == nil {
-		return c.rdb.Set(c.ctx, key, "nil", productNilExpire).Err()
+		return c.rdb.Set(c.ctx, key, "nil", nilCacheTTL()).Err()
 	}
 
 	data, err := json.Marshal(product)
 	if err != nil {
 		return errors.Wrap(err, "序列化商品缓存数据失败")
 	}
-	return c.rdb.Set(c.ctx, key, data, productBaseExpire).Err()
+	return c.rdb.Set(c.ctx, key, data, cacheTTLWithJitter(productBaseExpire)).Err()
 }
 
+// DeleteProduct 删除单品缓存（更新商品后保证缓存一致性）
 func (c *productCache) DeleteProduct(id uint) error {
 	key := c.getProductKey(id)
 	return c.rdb.Del(c.ctx, key).Err()
@@ -152,19 +179,67 @@ func (c *productCache) GetProductList(keyword string, categoryID string) ([]*ent
 	return products, nil
 }
 
-// SetProductList 增强版：支持空值缓存
+// SetProductList 增强版：支持空值缓存 + TTL随机抖动
 func (c *productCache) SetProductList(keyword string, categoryID string, products []*entity.Product) error {
 	key := c.getProductListKey(keyword, categoryID)
 
 	if products == nil {
-		return c.rdb.Set(c.ctx, key, "nil", productNilExpire).Err()
+		return c.rdb.Set(c.ctx, key, "nil", nilCacheTTL()).Err()
 	}
 
 	data, err := json.Marshal(products)
 	if err != nil {
 		return errors.Wrap(err, "序列化商品列表缓存数据失败")
 	}
-	return c.rdb.Set(c.ctx, key, data, productBaseExpire).Err()
+	return c.rdb.Set(c.ctx, key, data, cacheTTLWithJitter(productBaseExpire)).Err()
+}
+
+// getProductLockKey 获取商品缓存的分布式互斥锁 Key
+func (c *productCache) getProductLockKey(id uint) string {
+	return fmt.Sprintf("product:lock:%d", id)
+}
+
+// TryLockProduct 尝试获取分布式互斥锁（Redis SETNX）
+//
+// 用途：防缓存击穿 — 热点 Key 过期时，多个并发请求只有一个能拿到锁去查 DB，
+//
+//	其他请求等待锁释放后直接从缓存读取
+//
+// 返回 true 表示获取锁成功（当前 goroutine 负责查 DB 并回写缓存）
+// 返回 false 表示锁被其他 goroutine 持有（应等待后重试读缓存）
+func (c *productCache) TryLockProduct(id uint) bool {
+	lockKey := c.getProductLockKey(id)
+	ok, err := c.rdb.SetNX(c.ctx, lockKey, "1", productLockExpire).Result()
+	if err != nil {
+		// Redis 故障时降级：不阻塞，直接放行去查 DB
+		log.Printf("⚠️ 分布式互斥锁获取失败，降级放行: %v", err)
+		return true
+	}
+	return ok
+}
+
+// UnlockProduct 释放分布式互斥锁（查 DB 并回写缓存后调用）
+func (c *productCache) UnlockProduct(id uint) {
+	lockKey := c.getProductLockKey(id)
+	if err := c.rdb.Del(c.ctx, lockKey).Err(); err != nil {
+		log.Printf("⚠️ 分布式互斥锁释放失败: %v", err)
+	}
+}
+
+// WaitAndRetry 等待其他 goroutine 完成 DB 查询后重试读缓存（带超时保护）
+//
+// 返回 true 表示重试期间命中了缓存
+// 返回 false 表示超时，调用方应降级为自行查 DB
+func (c *productCache) WaitAndRetry(id uint) (*entity.Product, bool) {
+	deadline := time.Now().Add(productLockMaxWait)
+	for time.Now().Before(deadline) {
+		time.Sleep(productLockRetryInterval)
+		product, _ := c.GetProduct(id)
+		if product != nil {
+			return product, true
+		}
+	}
+	return nil, false
 }
 
 // ClearAllProductList 使用 SCAN 命令删除所有商品列表缓存（避免 KEYS 阻塞 Redis）

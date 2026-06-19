@@ -158,7 +158,7 @@ async function fetchProducts() {
     if (selectedCategory.value) {
       params.category_id = String(selectedCategory.value)
     }
-    const res = await api.post('/product/list', params)
+    const res = await api.get('/product/list', { params })
     const data = res.data
     productList.value = data.list || data.products || []
     total.value = data.total || 0

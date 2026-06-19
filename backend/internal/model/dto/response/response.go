@@ -24,6 +24,7 @@ func Success(c *gin.Context, data interface{}) {
 	})
 }
 
+// Error 统一错误响应，将自定义错误转为 HTTP 200 + JSON code/message 格式
 func Error(ctx *gin.Context, err error) {
 	var code int = 500
 	var msg string = "服务器内部错误"
