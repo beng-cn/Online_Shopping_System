@@ -1,5 +1,16 @@
 package main
 
+// @title           在线商城 API
+// @version         1.0
+// @description     基于 Go/Gin 的电商系统接口文档，包含用户、商品、购物车、订单、秒杀模块
+// @host            localhost:8080
+// @BasePath        /api/v1
+// @schemes         http
+// @securityDefinitions.apikey Bearer
+// @in              header
+// @name            Authorization
+// @description     在输入框中输入 "Bearer {token}" 进行认证
+
 import (
 	"context"
 	"fmt"
@@ -85,18 +96,21 @@ func main() {
 		}
 	}()
 
-	// 秒杀库存对账器（每1小时执行一次，对比 Redis 与 DB 数据一致性）
+	// 秒杀一致性守护器：崩溃恢复 + 库存对账，每5秒执行一次
+	// 合并维护，两套逻辑共用同一扫描周期
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("⚠️ 秒杀对账器发生panic: %v", r)
+				log.Printf("⚠️ 秒杀一致性守护器发生panic: %v", r)
 			}
 		}()
-		time.Sleep(60 * time.Second) // 延迟1分钟，确保服务完全就绪
-		ticker := time.NewTicker(1 * time.Hour)
+		time.Sleep(5 * time.Second) // 延迟5秒，确保服务完全就绪
+
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
+
 		for range ticker.C {
-			router.FlashService.ReconcileStock()
+			router.FlashService.GuardConsistency()
 		}
 	}()
 

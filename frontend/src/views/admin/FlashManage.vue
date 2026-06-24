@@ -312,12 +312,14 @@ async function handleSubmit() {
   submitLoading.value = true
   try {
     const body = {
-      product_id: form.product_id,
       flash_price: form.flash_price,
       flash_stock: form.flash_stock,
       queue_cap: form.queue_cap,
       start_time: form.start_time,
       end_time: form.end_time
+    }
+    if (!isEdit.value) {
+      body.product_id = form.product_id
     }
 
     if (isEdit.value) {

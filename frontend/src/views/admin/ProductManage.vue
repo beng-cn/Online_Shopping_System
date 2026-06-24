@@ -106,8 +106,8 @@
           :total="pagination.total"
           layout="total, sizes, prev, pager, next, jumper"
           background
-          @size-change="handleSearch"
-          @current-change="handleSearch"
+          @size-change="handlePageChange"
+          @current-change="handlePageChange"
         />
       </div>
     </el-card>
@@ -251,6 +251,11 @@ async function fetchProducts() {
 }
 
 // 搜索
+// 翻页/切换每页条数
+function handlePageChange() {
+  fetchProducts()
+}
+
 function handleSearch() {
   pagination.page_num = 1
   fetchProducts()

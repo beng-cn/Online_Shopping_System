@@ -11,7 +11,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import axios from 'axios'
+import api from '../api'
 import { ElMessage } from 'element-plus'
 
 const emit = defineEmits(['verified', 'cancel'])
@@ -23,7 +23,7 @@ async function verify() {
   if (!pin.value) return ElMessage.warning('请输入PIN码')
   loading.value = true
   try {
-    await axios.post('/api/admin/verify-pin', { pin: pin.value })
+    await api.post('/admin/verify-pin', { pin: pin.value })
     ElMessage.success('验证成功')
     visible.value = false
     emit('verified')

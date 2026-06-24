@@ -1,5 +1,10 @@
 <template>
   <div class="cart-page">
+    <div class="back-bar">
+      <el-button text @click="$router.back()">
+        <el-icon><ArrowLeft /></el-icon> 返回上一级
+      </el-button>
+    </div>
     <h2 class="page-title">我的购物车</h2>
 
     <!-- 加载状态 -->
@@ -166,7 +171,7 @@ async function fetchCartList() {
             ...item,
             product_name: productRes.data?.name || '',
             product_price: productRes.data?.price || 0,
-            product_image: productRes.data?.image_url || '',
+            product_image: productRes.data?.image || '',
           }
         } catch (e) {
           return { ...item, product_name: '', product_price: 0, product_image: '' }
@@ -249,6 +254,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.back-bar { margin-bottom: 8px; }
 .cart-page {
   max-width: 1200px;
   margin: 0 auto;

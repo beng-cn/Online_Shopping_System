@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"backend/internal/model/entity"
@@ -27,9 +28,13 @@ type FlashCache interface {
 	RollbackDeduct(flashSaleID uint, userID uint) error                    // 回滚扣减（DB写入失败时调用）
 	GetRemainingStock(flashSaleID uint) (int64, error)                      // 查询剩余库存
 	SetFlashStock(flashSaleID uint, stock int64) error                     // 设置剩余库存（对账修正用）
+	AtomicSetStock(flashSaleID uint, expected int64, newVal int64) (int64, int64, error) // Lua原子CAS设置库存（对账修正用）
+	GetDeductTrackUsers(flashSaleID uint) ([]string, error)                             // 获取已购追踪列表（崩溃恢复短期窗口用）
 	SetFlashSoldOut(flashSaleID uint) error                                // 设置全局售罄标记（多实例共享）
 	IsFlashSoldOut(flashSaleID uint) (bool, error)                         // 检查全局售罄标记
 	DeleteFlashSoldOut(flashSaleID uint) error                             // 删除售罄标记（库存释放时调用）
+	GetRandomPurchasedUsers(flashSaleID uint, count int64) ([]string, error) // 从已购集合随机抽样用户（幽灵用户检测用）
+	DeleteFlashInfo(flashSaleID uint) error                                  // 删除活动信息缓存（修改活动时调用）
 
 	// === 初始化与预热 ===
 	WarmUpStock(flashSaleID uint, stock int) error // 将秒杀库存预热到Redis
@@ -43,6 +48,7 @@ type FlashCache interface {
 	SetPendingOrder(flashSaleID uint, userID uint, orderNo string) error // 记录待处理订单
 	GetPendingOrders(flashSaleID uint) (map[string]string, error)        // 获取所有待处理记录
 	RemovePendingOrder(flashSaleID uint, userID uint) error              // 清除单条待处理记录
+	MarkPendingRolledBack(flashSaleID uint, userID uint) error                            // 标记防丢失记录为已回滚（防止误重建）
 	ScanAllPendingKeys() ([]string, error)                               // 扫描所有 flash:pending:* 的key
 	CleanPendingKey(key string) error                                    // 清理整个 pending key
 
@@ -68,6 +74,7 @@ func NewFlashCache(client *redis.Client) FlashCache {
 var atomicDeductScript = redis.NewScript(`
 	local stock_key = KEYS[1]
 	local user_key = KEYS[2]
+	local track_key = KEYS[3]       -- 已购追踪列表（用于崩溃恢复扫描）
 	local user_id = ARGV[1]
 
 	local stock = redis.call('GET', stock_key)
@@ -86,6 +93,9 @@ var atomicDeductScript = redis.NewScript(`
 
 	redis.call('DECR', stock_key)
 	redis.call('SADD', user_key, user_id)
+	-- 追加到已购追踪列表，TTL 5分钟（短期恢复窗口，超时后由 pending 机制兜底）
+	redis.call('RPUSH', track_key, user_id)
+	redis.call('EXPIRE', track_key, 300)
 
 	return {0, stock - 1}  -- 成功，返回剩余库存
 `)
@@ -108,6 +118,26 @@ var atomicRollbackScript = redis.NewScript(`
 	return {1, stock}
 `)
 
+// ==================== Lua 原子CAS设置库存脚本（对账修正用，防止并发覆盖） ====================
+var atomicSetStockScript = redis.NewScript(`
+	local stock_key = KEYS[1]
+	local expected = tonumber(ARGV[1])
+	local new_val = tonumber(ARGV[2])
+
+	local current = redis.call('GET', stock_key)
+	if current == false then
+		return {0, 0}
+	end
+	current = tonumber(current)
+	if current == expected then
+		redis.call('SET', stock_key, new_val)
+		return {1, new_val}
+	else
+		return {0, current}
+	end
+`)
+
+
 // ==================== 排队入场 ====================
 
 // queueKey 生成排队计数器的Redis键名
@@ -115,9 +145,9 @@ func queueKey(flashSaleID uint) string {
 	return fmt.Sprintf("flash:queue:%d", flashSaleID)
 }
 
-// admittedKey 生成入场用户集合的Redis键名
-func admittedKey(flashSaleID uint) string {
-	return fmt.Sprintf("flash:queue:%d:admitted", flashSaleID)
+// admittedKey 生成入场用户键名（每个用户独立键，自带TTL自动过期）
+func admittedKey(flashSaleID uint, userID uint) string {
+	return fmt.Sprintf("flash:admitted:%d:%d", flashSaleID, userID)
 }
 
 // IncrQueueCount 原子递增排队计数，返回当前排队序号
@@ -143,25 +173,20 @@ func (c *flashCache) DecrQueueCount(flashSaleID uint) (int64, error) {
 	return count, nil
 }
 
-// AddAdmittedUser 将用户ID添加到已入场集合
+// AddAdmittedUser 将用户标记为已入场，独立键自带5分钟TTL自动过期
 func (c *flashCache) AddAdmittedUser(flashSaleID uint, userID uint) error {
-	key := admittedKey(flashSaleID)
-	if err := c.client.SAdd(c.ctx, key, userID).Err(); err != nil {
-		return fmt.Errorf("添加入场用户失败: %w", err)
-	}
-	// 设置5分钟过期，防止内存泄漏
-	c.client.Expire(c.ctx, key, 5*time.Minute)
-	return nil
+	return c.client.Set(c.ctx, admittedKey(flashSaleID, userID), "1", 5*time.Minute).Err()
 }
 
 // IsUserAdmitted 检查用户是否已获得入场资格
 func (c *flashCache) IsUserAdmitted(flashSaleID uint, userID uint) (bool, error) {
-	return c.client.SIsMember(c.ctx, admittedKey(flashSaleID), userID).Result()
+	exists, err := c.client.Exists(c.ctx, admittedKey(flashSaleID, userID)).Result()
+	return exists == 1, err
 }
 
 // RemoveAdmittedUser 移除用户入场资格（超时释放库存时调用）
 func (c *flashCache) RemoveAdmittedUser(flashSaleID uint, userID uint) error {
-	return c.client.SRem(c.ctx, admittedKey(flashSaleID), userID).Err()
+	return c.client.Del(c.ctx, admittedKey(flashSaleID, userID)).Err()
 }
 
 // GetQueueCount 获取当前排队人数
@@ -185,12 +210,17 @@ func userSetKey(flashSaleID uint) string {
 	return fmt.Sprintf("flash:user:%d", flashSaleID)
 }
 
+// deductTrackKey 生成已购追踪列表键名（Lua脚本中用于崩溃恢复短期窗口）
+func deductTrackKey(flashSaleID uint) string {
+	return fmt.Sprintf("flash:deduct_track:%d", flashSaleID)
+}
+
 // AtomicDeductStock 使用Lua脚本原子扣减库存
 // 返回值: (code, remaining)
 //
 //	code=0 成功 | code=1 库存不足 | code=2 已抢过 | code=3 活动未预热
 func (c *flashCache) AtomicDeductStock(flashSaleID uint, userID uint) (int64, int64, error) {
-	keys := []string{stockKey(flashSaleID), userSetKey(flashSaleID)}
+	keys := []string{stockKey(flashSaleID), userSetKey(flashSaleID), deductTrackKey(flashSaleID)}
 	args := []interface{}{userID}
 
 	result, err := atomicDeductScript.Run(c.ctx, c.client, keys, args...).Result()
@@ -241,6 +271,83 @@ func (c *flashCache) SetFlashStock(flashSaleID uint, stock int64) error {
 	return c.client.Set(c.ctx, stockKey(flashSaleID), stock, 48*time.Hour).Err()
 }
 
+// AtomicSetStock 使用Lua CAS脚本原子设置库存（对账修正用，防止并发覆盖）
+// 仅当 current == expected 时才执行 SET，否则放弃修正
+// 返回值: (code, actualStock) — code=1 成功, code=0 冲突(放弃修正)
+func (c *flashCache) AtomicSetStock(flashSaleID uint, expected int64, newVal int64) (int64, int64, error) {
+	keys := []string{stockKey(flashSaleID)}
+	args := []interface{}{expected, newVal}
+
+	result, err := atomicSetStockScript.Run(c.ctx, c.client, keys, args...).Result()
+	if err != nil {
+		return 0, 0, fmt.Errorf("CAS设置库存 Lua脚本执行失败: %w", err)
+	}
+
+	arr, ok := result.([]interface{})
+	if !ok || len(arr) < 2 {
+		return 0, 0, fmt.Errorf("CAS脚本返回值格式错误: %v", result)
+	}
+	code := arr[0].(int64)
+	val := arr[1].(int64)
+	return code, val, nil
+}
+
+// GetRandomPurchasedUsers 从已购集合中随机抽取用户（用于幽灵用户检测）
+func (c *flashCache) GetRandomPurchasedUsers(flashSaleID uint, count int64) ([]string, error) {
+	return c.client.SRandMemberN(c.ctx, userSetKey(flashSaleID), count).Result()
+}
+
+// DeleteFlashInfo 删除活动信息缓存（修改活动时主动失效）
+func (c *flashCache) DeleteFlashInfo(flashSaleID uint) error {
+	return c.client.Del(c.ctx, fmt.Sprintf("flash:info:%d", flashSaleID)).Err()
+}
+
+// GetDeductTrackUsers 获取已购追踪列表中的所有用户ID（用于崩溃恢复短期窗口扫描）
+// 该列表由 Lua 扣减脚本在 SADD 用户集合时同步写入，TTL 5分钟
+func (c *flashCache) GetDeductTrackUsers(flashSaleID uint) ([]string, error) {
+	return c.client.LRange(c.ctx, deductTrackKey(flashSaleID), 0, -1).Result()
+}
+
+// pendingStatusConfirmed 和 pendingStatusRolledBack 定义防丢失记录的状态值
+const (
+	pendingStatusConfirmed  = "confirmed"   // 正常扣减成功，等待DB写入
+	pendingStatusRolledBack = "rolled_back" // Redis已回滚，记录仅用于防止误重建
+)
+
+// formatPendingValue 将 orderNo 和 status 编码为存储格式
+func formatPendingValue(orderNo, status string) string {
+	return orderNo + "|" + status
+}
+
+// parsePendingValue 解析存储格式，返回 (orderNo, status)
+// 兼容旧格式（无状态字段），旧格式默认视为 confirmed
+func parsePendingValue(raw string) (orderNo, status string) {
+	parts := strings.SplitN(raw, "|", 2)
+	orderNo = parts[0]
+	if len(parts) == 2 {
+		status = parts[1]
+	} else {
+		status = pendingStatusConfirmed // 旧格式兼容
+	}
+	return
+}
+
+// MarkPendingRolledBack 将防丢失记录标记为已回滚状态（防止 RecoverPendingOrders 误重建订单）
+// 在 RollbackDeduct 成功后调用，替代直接删除 pending 记录
+func (c *flashCache) MarkPendingRolledBack(flashSaleID uint, userID uint) error {
+	key := pendingKey(flashSaleID)
+	field := strconv.Itoa(int(userID))
+	// 读取现有值，提取 orderNo，重新编码为 rolled_back 状态
+	existing, err := c.client.HGet(c.ctx, key, field).Result()
+	if err != nil {
+		return fmt.Errorf("读取防丢失记录失败: %w", err)
+	}
+	orderNo, _ := parsePendingValue(existing)
+	newValue := formatPendingValue(orderNo, pendingStatusRolledBack)
+	return c.client.HSet(c.ctx, key, field, newValue).Err()
+}
+
+
 
 // soldOutKey 生成全局售罄标记的 Redis 键名（多实例共享）
 func soldOutKey(flashSaleID uint) string {
@@ -282,22 +389,42 @@ func (c *flashCache) WarmUpStock(flashSaleID uint, stock int) error {
 	c.client.Del(c.ctx, userSetKey(flashSaleID))
 	// 清空排队计数器
 	c.client.Del(c.ctx, queueKey(flashSaleID))
-	c.client.Del(c.ctx, admittedKey(flashSaleID))
+	// 清空入场用户键（SCAN 删除单用户键）
+	c.cleanAdmittedKeys(flashSaleID)
 	return nil
 }
 
 // ClearFlashCache 清理秒杀相关的所有Redis缓存
 func (c *flashCache) ClearFlashCache(flashSaleID uint) error {
+	c.cleanAdmittedKeys(flashSaleID) // 清理所有单用户入场键
 	keys := []string{
 		stockKey(flashSaleID),
 		userSetKey(flashSaleID),
 		queueKey(flashSaleID),
-		admittedKey(flashSaleID),
 		fmt.Sprintf("flash:info:%d", flashSaleID),
-		pendingKey(flashSaleID), // 清理防丢失记录，防止残留
+		pendingKey(flashSaleID),
 		soldOutKey(flashSaleID),
 	}
 	return c.client.Del(c.ctx, keys...).Err()
+}
+
+// cleanAdmittedKeys 扫描并删除指定活动的所有单用户入场键
+func (c *flashCache) cleanAdmittedKeys(flashSaleID uint) {
+	pattern := fmt.Sprintf("flash:admitted:%d:*", flashSaleID)
+	var cursor uint64
+	for {
+		keys, nextCursor, err := c.client.Scan(c.ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return
+		}
+		if len(keys) > 0 {
+			c.client.Del(c.ctx, keys...)
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
 }
 
 // ==================== 活动信息缓存 ====================
@@ -327,9 +454,11 @@ func pendingKey(flashSaleID uint) string {
 }
 
 // SetPendingOrder 记录待处理的秒杀订单（Redis扣减成功但DB尚未写入时调用）
+// 存储格式: "orderNo|confirmed"，支持 RecoverPendingOrders 按状态区分处理
 func (c *flashCache) SetPendingOrder(flashSaleID uint, userID uint, orderNo string) error {
 	key := pendingKey(flashSaleID)
-	if err := c.client.HSet(c.ctx, key, strconv.Itoa(int(userID)), orderNo).Err(); err != nil {
+	value := formatPendingValue(orderNo, pendingStatusConfirmed)
+	if err := c.client.HSet(c.ctx, key, strconv.Itoa(int(userID)), value).Err(); err != nil {
 		return fmt.Errorf("设置防丢失记录失败: %w", err)
 	}
 	// 使用独立的 Expire 命令设置过期时间（非原子操作，但风险可控：

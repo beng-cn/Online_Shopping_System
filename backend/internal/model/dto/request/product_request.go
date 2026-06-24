@@ -22,13 +22,13 @@ type UpdateProductRequest struct {
 	Status     int    `json:"status" binding:"oneof=0 1" msg:"状态只能是0或1"`
 }
 
-// 商品列表查询请求
+// 商品列表查询请求（GET 请求使用 form 标签绑定 Query String）
 type ProductListRequest struct {
-	Keyword    string  `json:"keyword" binding:"omitempty,max=50" msg:"关键词长度不能超过50个字符"`
-	CategoryID string  `json:"category_id" binding:"omitempty,numeric" msg:"分类ID必须是数字"`
-	PageNum    int     `json:"page_num" binding:"omitempty,min=1" msg:"页码必须大于0"`
-	PageSize   int     `json:"page_size" binding:"omitempty,min=1,max=100" msg:"每页条数必须在1-100之间"`
-	Sort       string  `json:"sort" binding:"omitempty,oneof=created_at sales price_asc price_desc" msg:"排序方式只能是created_at、sales、price_asc、price_desc"`
-	MinPrice   float64 `json:"min_price" binding:"omitempty,min=0" msg:"最低价格不能为负数"`
-	MaxPrice   float64 `json:"max_price" binding:"omitempty,min=0" msg:"最高价格不能为负数"`
+	Keyword    string  `json:"keyword" form:"keyword" binding:"omitempty,max=50" msg:"关键词长度不能超过50个字符"`
+	CategoryID string  `json:"category_id" form:"category_id" binding:"omitempty,numeric" msg:"分类ID必须是数字"`
+	PageNum    int     `json:"page_num" form:"page_num" binding:"omitempty,min=1" msg:"页码必须大于0"`
+	PageSize   int     `json:"page_size" form:"page_size" binding:"omitempty,min=1,max=100" msg:"每页条数必须在1-100之间"`
+	Sort       string  `json:"sort" form:"sort" binding:"omitempty,oneof=created_at sales price_asc price_desc" msg:"排序方式只能是created_at、sales、price_asc、price_desc"`
+	MinPrice   float64 `json:"min_price" form:"min_price" binding:"omitempty,min=0" msg:"最低价格不能为负数"`
+	MaxPrice   float64 `json:"max_price" form:"max_price" binding:"omitempty,min=0" msg:"最高价格不能为负数"`
 }

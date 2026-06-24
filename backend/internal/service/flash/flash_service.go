@@ -43,9 +43,9 @@ type FlashService interface {
 
 	// === 后台定时任务 ===
 	ScanExpiredOrders()                          // 扫描超时未支付订单
-	RecoverPendingOrders()                       // 崩溃恢复：处理未完成的防丢失记录
+	GuardConsistency()                           // 一致性守护：崩溃恢复 + 库存对账，每5秒执行
 	AutoWarmUp()                                 // 自动预热即将开始的秒杀活动
-	ReconcileStock()                             // 对账：Redis库存 vs DB订单数
+	RecoverPendingOrders()                       // 崩溃恢复：启动时单独调用一次
 
 	// === 注入方法 ===
 	SetUserLimiter(limiter flashlimiter.UserLimiter) // 注入 per-user 限流器
@@ -192,6 +192,8 @@ func (s *flashService) UpdateFlashSale(id uint, req *request.UpdateFlashSaleRequ
 		flash.Status = *req.Status
 	}
 
+	// 修改成功后主动失效活动缓存，防止前端读到过期数据
+	s.flashCache.DeleteFlashInfo(id)
 	return s.flashRepo.Update(flash)
 }
 
@@ -319,6 +321,7 @@ func (s *flashService) ListActiveFlashSales() ([]*response.FlashSaleListResponse
 			EndTime:     f.EndTime.Format("2006-01-02 15:04:05"),
 			Status:      f.Status,
 			Image:       f.Product.Image,
+			ServerTime:  time.Now().Format("2006-01-02 15:04:05"),
 		})
 	}
 	return resp, nil
@@ -548,7 +551,7 @@ func (s *flashService) SnatchFlashSale(userID uint, req *request.FlashSnatchRequ
 				return nil, errors.New(errors.CodeServerError, "订单创建失败，请稍后重试")
 			}
 			// 回滚成功 → 正常清理
-			s.flashCache.RemovePendingOrder(req.FlashSaleID, userID)
+			s.flashCache.MarkPendingRolledBack(req.FlashSaleID, userID)
 			s.inventory.Increment(req.FlashSaleID)
 			s.flashCache.DeleteFlashSoldOut(req.FlashSaleID) // 释放库存后清除售罄标记
 			return nil, errors.New(errors.CodeServerError, "订单创建失败，秒杀资格已保留，请重新尝试")
@@ -795,13 +798,83 @@ func (s *flashService) ScanExpiredOrders() {
 
 		// 重置本地内存售罄标记
 		s.inventory.ResetSoldOut(fid)
-		s.flashCache.DeleteFlashSoldOut(fid) // 库存释放后清除全局售罄标记
+		// 清除全局售罄标记（失败重试3次，兜底由 healSoldOutFlag 保证）
+		for retry := 0; retry < 3; retry++ {
+			if err := s.flashCache.DeleteFlashSoldOut(fid); err == nil {
+				break
+			}
+			if retry == 2 {
+				log.Printf("⚠️ 清除售罄标记失败（已重试3次）: flashSaleID=%d", fid)
+			}
+		}
 
 		log.Printf("🔄 秒杀库存已释放: orderID=%d flashSaleID=%d userID=%d", o.ID, fid, o.UserID)
 	}
 }
 
 // RecoverPendingOrders 崩溃恢复：扫描Redis中的防丢失记录，补建丢失的DB订单
+// GuardConsistency 一致性守护：崩溃恢复 + 库存对账 + 幽灵用户检测 + 售罄标记校验
+// 每5秒由 main.go 定时触发
+func (s *flashService) GuardConsistency() {
+	s.RecoverPendingOrders()
+	s.ReconcileStock()
+	s.purgeGhostPurchasers()   // 抽样清理已购集合中的幽灵用户
+	s.healSoldOutFlag()        // 校验售罄标记与真实库存的一致性
+}
+
+// purgeGhostPurchasers 从已购集合随机抽取用户，比对DB订单，移除无订单的幽灵用户
+func (s *flashService) purgeGhostPurchasers() {
+	flashes, err := s.flashRepo.ListActive()
+	if err != nil {
+		return
+	}
+	for _, f := range flashes {
+		// 每轮每活动最多抽样20个，避免影响性能
+		sample, err := s.flashCache.GetRandomPurchasedUsers(f.ID, 20)
+		if err != nil || len(sample) == 0 {
+			continue
+		}
+		for _, uidStr := range sample {
+			uid, err := strconv.ParseUint(uidStr, 10, 64)
+			if err != nil {
+				continue
+			}
+			// 检查 DB 中是否有该用户的已支付或待支付秒杀订单
+			var count int64
+			s.db.Model(&entity.Order{}).
+				Where("user_id = ? AND flash_sale_id = ? AND status IN (0, 1, 3)", uid, f.ID).
+				Count(&count)
+			if count == 0 {
+				// 幽灵用户：在已购集合中但无有效订单 → 回滚Redis已购资格
+				s.flashCache.RollbackDeduct(f.ID, uint(uid))
+				log.Printf("👻 幽灵用户已清理: flashSaleID=%d userID=%d", f.ID, uid)
+			}
+		}
+	}
+}
+
+// healSoldOutFlag 校验售罄标记：Redis 有库存但标记仍为售罄 → 删除标记
+func (s *flashService) healSoldOutFlag() {
+	flashes, err := s.flashRepo.ListActive()
+	if err != nil {
+		return
+	}
+	for _, f := range flashes {
+		remaining, err := s.flashCache.GetRemainingStock(f.ID)
+		if err != nil {
+			continue
+		}
+		if remaining > 0 {
+			if soldOut, _ := s.flashCache.IsFlashSoldOut(f.ID); soldOut {
+				s.flashCache.DeleteFlashSoldOut(f.ID)
+				s.inventory.ResetSoldOut(f.ID)
+				log.Printf("🩹 售罄标记自愈: flashSaleID=%d 实际库存=%d 已清除错误标记", f.ID, remaining)
+			}
+		}
+	}
+}
+
+// RecoverPendingOrders 崩溃恢复：扫描防丢失记录和已购追踪列表，补建丢失订单
 // 在 main.go 启动时调用
 func (s *flashService) RecoverPendingOrders() {
 	log.Println("🔍 开始扫描秒杀防丢失记录...")
@@ -809,70 +882,126 @@ func (s *flashService) RecoverPendingOrders() {
 	keys, err := s.flashCache.ScanAllPendingKeys()
 	if err != nil {
 		log.Printf("⚠️ 扫描防丢失记录失败: %v", err)
-		return
-	}
+	} else if len(keys) > 0 {
+		log.Printf("📋 发现 %d 个待恢复的活动", len(keys))
+		recovered := 0
+		rolledBack := 0
 
-	if len(keys) == 0 {
-		log.Println("✅ 无待恢复的秒杀订单")
-		return
-	}
-
-	log.Printf("📋 发现 %d 个待恢复的活动", len(keys))
-	recovered := 0
-	rolledBack := 0
-
-	for _, key := range keys {
-		// 从 key 中提取 flashSaleID: "flash:pending:123"
-		var flashSaleID uint
-		if n, _ := fmt.Sscanf(key, "flash:pending:%d", &flashSaleID); n != 1 {
-			log.Printf("⚠️ 跳过格式异常的防丢失记录 key: %s", key)
-			continue
-		}
-
-		pendingOrders, err := s.flashCache.GetPendingOrders(flashSaleID)
-		if err != nil {
-			log.Printf("⚠️ 读取防丢失记录失败: key=%s err=%v", key, err)
-			continue
-		}
-
-		for userIDStr, orderNo := range pendingOrders {
-			userID, _ := strconv.ParseUint(userIDStr, 10, 64)
-
-			// 检查DB中是否已存在该订单
-			existing, err := s.orderRepo.GetByOrderNo(orderNo)
-			if err == nil && existing != nil {
-				// DB中已存在，只清理Redis记录
-				s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
-				log.Printf("  ✓ 订单已存在于DB，清理Redis: orderNo=%s", orderNo)
+		for _, key := range keys {
+			var flashSaleID uint
+			if n, _ := fmt.Sscanf(key, "flash:pending:%d", &flashSaleID); n != 1 {
+				log.Printf("⚠️ 跳过格式异常的防丢失记录 key: %s", key)
 				continue
 			}
 
-			// DB中不存在 → 补建订单
-			flash, err := s.flashRepo.GetByID(flashSaleID)
+			pendingOrders, err := s.flashCache.GetPendingOrders(flashSaleID)
 			if err != nil {
-				// 活动都不存在了，回滚Redis库存
-				s.flashCache.RollbackDeduct(flashSaleID, uint(userID))
-				s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
-				rolledBack++
-				log.Printf("  ✗ 活动不存在，回滚库存: flashSaleID=%d userID=%d", flashSaleID, userID)
+				log.Printf("⚠️ 读取防丢失记录失败: key=%s err=%v", key, err)
 				continue
 			}
 
-			err = s.createFlashOrderInDB(flash, uint(userID), orderNo, flash.FlashPrice)
+			for userIDStr, rawValue := range pendingOrders {
+				userID, _ := strconv.ParseUint(userIDStr, 10, 64)
+				// 解析 pending 记录格式: "orderNo|status"（兼容旧格式）
+				orderNo, status := parsePendingValue(rawValue)
+
+				// 已回滚的记录 → 直接清理，不重建订单（防止场景C/E误重建）
+				if status == "rolled_back" {
+					s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
+					log.Printf("  ✓ 已回滚记录已清理: orderNo=%s userID=%d", orderNo, userID)
+					continue
+				}
+
+				// 检查DB中是否已存在该订单
+				existing, err := s.orderRepo.GetByOrderNo(orderNo)
+				if err == nil && existing != nil {
+					s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
+					log.Printf("  ✓ 订单已存在于DB，清理Redis: orderNo=%s", orderNo)
+					continue
+				}
+
+				// DB中不存在 → 补建订单（仅 confirmed 状态）
+				flash, err := s.flashRepo.GetByID(flashSaleID)
+				if err != nil {
+					s.flashCache.RollbackDeduct(flashSaleID, uint(userID))
+					s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
+					rolledBack++
+					log.Printf("  ✗ 活动不存在，回滚库存: flashSaleID=%d userID=%d", flashSaleID, userID)
+					continue
+				}
+
+				err = s.createFlashOrderInDB(flash, uint(userID), orderNo, flash.FlashPrice)
+				if err != nil {
+					log.Printf("  ⚠ 补建订单失败（回滚Redis）: orderNo=%s err=%v", orderNo, err)
+					s.flashCache.RollbackDeduct(flashSaleID, uint(userID))
+					s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
+					rolledBack++
+				} else {
+					s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
+					recovered++
+					log.Printf("  ✅ 补建订单成功: orderNo=%s userID=%d", orderNo, userID)
+				}
+			}
+		}
+
+		log.Printf("✅ 崩溃恢复完成：补建=%d 回滚=%d", recovered, rolledBack)
+	}
+
+	// === 第二阶段：扫描 deduct track 列表，修复场景A ===
+	// 在 Lua 扣减成功后、SetPendingOrder 之前崩溃的用户，
+	// 他们在 Redis 已购集合中但没有 pending 记录也没有 DB 订单
+	activeFlashes, err := s.flashRepo.ListActive()
+	if err != nil {
+		log.Printf("⚠️ 获取活动列表失败，跳过 deduct track 扫描: %v", err)
+		return
+	}
+	for _, f := range activeFlashes {
+		userIDs, err := s.flashCache.GetDeductTrackUsers(f.ID)
+		if err != nil || len(userIDs) == 0 {
+			continue
+		}
+		for _, uidStr := range userIDs {
+			uid, err := strconv.ParseUint(uidStr, 10, 64)
 			if err != nil {
-				log.Printf("  ⚠ 补建订单失败（回滚Redis）: orderNo=%s err=%v", orderNo, err)
-				s.flashCache.RollbackDeduct(flashSaleID, uint(userID))
-				s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
-				rolledBack++
+				continue
+			}
+			// 检查是否有对应的 pending 记录（有 pending 则第一阶段的 pending 扫描已处理）
+			pendingOrders, _ := s.flashCache.GetPendingOrders(f.ID)
+			if _, hasPending := pendingOrders[uidStr]; hasPending {
+				continue // 已被 pending 扫描处理
+			}
+			// 检查 DB 中是否已有该用户的秒杀订单
+			var count int64
+			s.db.Model(&entity.Order{}).
+				Where("user_id = ? AND flash_sale_id = ? AND status IN (0, 1, 3)", uid, f.ID).
+				Count(&count)
+			if count > 0 {
+				continue // DB 中已有订单
+			}
+			// 用户已在 Redis 已购集合中但无订单 → 补建
+			orderNo := s.generateOrderNo()
+			err = s.createFlashOrderInDB(f, uint(uid), orderNo, f.FlashPrice)
+			if err != nil {
+				log.Printf("  ⚠ deduct track 补建失败（回滚Redis）: flashSaleID=%d userID=%d err=%v", f.ID, uid, err)
+				s.flashCache.RollbackDeduct(f.ID, uint(uid))
 			} else {
-				s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
-				recovered++
-				log.Printf("  ✅ 补建订单成功: orderNo=%s userID=%d", orderNo, userID)
+				log.Printf("  ✅ deduct track 补建订单成功（场景A恢复）: orderNo=%s userID=%d flashSaleID=%d", orderNo, uid, f.ID)
 			}
 		}
 	}
+}
 
-	log.Printf("✅ 崩溃恢复完成：补建=%d 回滚=%d", recovered, rolledBack)
+// parsePendingValue 解析 pending 记录的存储格式，返回 (orderNo, status)
+// 兼容旧格式（无状态字段，默认视为 confirmed）
+func parsePendingValue(raw string) (orderNo, status string) {
+	parts := strings.SplitN(raw, "|", 2)
+	orderNo = parts[0]
+	if len(parts) == 2 {
+		status = parts[1]
+	} else {
+		status = "confirmed" // 旧格式兼容
+	}
+	return
 }
 
 // ReconcileStock 对账任务：比较 Redis 扣减数与 DB 订单数，发现不一致则告警
@@ -918,19 +1047,32 @@ func (s *flashService) ReconcileStock() {
 				} else {
 					correctedStock := int64(f.FlashStock) - dbSold
 					if correctedStock >= 0 {
-						s.flashCache.SetFlashStock(f.ID, correctedStock)
-						s.inventory.Init(f.ID, int(correctedStock))
-						s.flashCache.DeleteFlashSoldOut(f.ID)
-						log.Printf("🔧 自愈-活动%d: Redis库存修正为%d，已清除售罄标记", f.ID, correctedStock)
+						// 使用 CAS 原子设置，防止与并发抢购的 DECR 冲突（修复场景G）
+						code, actualVal, err := s.flashCache.AtomicSetStock(f.ID, redisRemaining, correctedStock)
+						if err != nil {
+							log.Printf("⚠️ 对账-活动%d: CAS修正失败: %v", f.ID, err)
+						} else if code == 0 {
+							log.Printf("⚠️ 对账-活动%d: CAS冲突（期间有并发扣减），放弃本轮修正，当前值=%d", f.ID, actualVal)
+						} else {
+							s.inventory.Init(f.ID, int(correctedStock))
+							s.flashCache.DeleteFlashSoldOut(f.ID)
+							log.Printf("🔧 自愈-活动%d: Redis库存CAS修正为%d，已清除售罄标记", f.ID, correctedStock)
+						}
 					}
 				}
 			} else if deviation < 0 {
 				// DB 多记录了 → 修正Redis计数器为DB值
 				correctedStock := int64(f.FlashStock) - dbSold
 				if correctedStock >= 0 {
-					s.flashCache.SetFlashStock(f.ID, correctedStock)
-					s.inventory.Init(f.ID, int(correctedStock))
-					log.Printf("🔧 自愈-活动%d: DB已售>Redis已售，Redis库存修正为%d", f.ID, correctedStock)
+					code, actualVal, err := s.flashCache.AtomicSetStock(f.ID, redisRemaining, correctedStock)
+					if err != nil {
+						log.Printf("⚠️ 对账-活动%d: CAS修正失败: %v", f.ID, err)
+					} else if code == 0 {
+						log.Printf("⚠️ 对账-活动%d: CAS冲突（期间有并发扣减），放弃本轮修正，当前值=%d", f.ID, actualVal)
+					} else {
+						s.inventory.Init(f.ID, int(correctedStock))
+						log.Printf("🔧 自愈-活动%d: DB已售>Redis已售，Redis库存CAS修正为%d", f.ID, correctedStock)
+					}
 				}
 			}
 		} else {

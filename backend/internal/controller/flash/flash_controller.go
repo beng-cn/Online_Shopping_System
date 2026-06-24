@@ -22,6 +22,13 @@ func NewFlashController(flashService flash.FlashService) *FlashController {
 }
 
 // ListActiveFlashSales 获取进行中的秒杀活动列表
+// @Summary 获取进行中的秒杀活动列表
+// @Description 无需登录，获取当前所有进行中和即将开始的秒杀活动
+// @Tags 秒杀
+// @Accept json
+// @Produce json
+// @Success 200 {object} response.Response "查询成功"
+// @Router /flash/list [get]
 func (c *FlashController) ListActiveFlashSales(ctx *gin.Context) {
 	resp, err := c.flashService.ListActiveFlashSales()
 	if err != nil {
@@ -32,6 +39,16 @@ func (c *FlashController) ListActiveFlashSales(ctx *gin.Context) {
 }
 
 // GetFlashSaleDetail 获取秒杀活动详情
+// @Summary 获取秒杀活动详情
+// @Description 无需登录，获取指定秒杀活动的详细信息，包含商品详情和秒杀进度
+// @Tags 秒杀
+// @Accept json
+// @Produce json
+// @Param id path int true "秒杀活动ID"
+// @Success 200 {object} response.Response "查询成功"
+// @Failure 400 {object} response.Response "活动ID无效"
+// @Failure 404 {object} response.Response "活动不存在"
+// @Router /flash/{id} [get]
 func (c *FlashController) GetFlashSaleDetail(ctx *gin.Context) {
 	idStr := ctx.Param("id")
 	id, err := strconv.Atoi(idStr)
@@ -49,6 +66,17 @@ func (c *FlashController) GetFlashSaleDetail(ctx *gin.Context) {
 }
 
 // EnterFlashSale 排队入场
+// @Summary 排队入场
+// @Description 用户加入秒杀活动的排队队列，获取入场令牌。需要先登录
+// @Tags 秒杀
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Param body body request.FlashEnterRequest true "排队入场请求体"
+// @Success 200 {object} response.Response "入场成功"
+// @Failure 400 {object} response.Response "参数错误"
+// @Failure 403 {object} response.Response "活动未开始或已结束"
+// @Router /auth/flash/enter [post]
 func (c *FlashController) EnterFlashSale(ctx *gin.Context) {
 	var req request.FlashEnterRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
@@ -66,6 +94,17 @@ func (c *FlashController) EnterFlashSale(ctx *gin.Context) {
 }
 
 // SnatchFlashSale 秒杀抢购（核心接口）
+// @Summary 秒杀抢购
+// @Description 用户提交秒杀抢购请求，需先通过排队入场并完成验证码验证。需要先登录
+// @Tags 秒杀
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Param body body request.FlashSnatchRequest true "秒杀抢购请求体"
+// @Success 200 {object} response.Response "抢购成功"
+// @Failure 400 {object} response.Response "参数错误"
+// @Failure 403 {object} response.Response "验证码错误或库存不足"
+// @Router /auth/flash/snatch [post]
 func (c *FlashController) SnatchFlashSale(ctx *gin.Context) {
 	var req request.FlashSnatchRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
@@ -83,7 +122,14 @@ func (c *FlashController) SnatchFlashSale(ctx *gin.Context) {
 }
 
 // GenerateCaptcha 生成验证码（人机验证）
-// GET /api/v1/auth/flash/captcha
+// @Summary 生成验证码
+// @Description 生成秒杀场景下的图形验证码，用于防刷。需要先登录，验证码有效期120秒
+// @Tags 秒杀
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Success 200 {object} response.Response "生成成功，返回captcha_id、captcha_image(base64)和expires_in"
+// @Router /auth/flash/captcha [get]
 func (c *FlashController) GenerateCaptcha(ctx *gin.Context) {
 	captcha, err := c.flashService.GenerateCaptcha()
 	if err != nil {
@@ -99,6 +145,14 @@ func (c *FlashController) GenerateCaptcha(ctx *gin.Context) {
 }
 
 // GetUserFlashOrders 获取用户秒杀订单列表
+// @Summary 获取用户秒杀订单
+// @Description 获取当前登录用户的所有秒杀订单记录。需要先登录
+// @Tags 秒杀
+// @Accept json
+// @Produce json
+// @Security ApiKeyAuth
+// @Success 200 {object} response.Response "查询成功"
+// @Router /auth/flash/orders [get]
 func (c *FlashController) GetUserFlashOrders(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
 	resp, err := c.flashService.GetUserFlashOrders(userID)

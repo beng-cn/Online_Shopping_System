@@ -1,5 +1,10 @@
 <template>
   <div class="flash-page">
+    <div class="back-bar">
+      <el-button text @click="$router.back()">
+        <el-icon><ArrowLeft /></el-icon> 返回上一级
+      </el-button>
+    </div>
     <div class="flash-header">
       <h2>秒杀活动 <el-tag type="danger" size="large">限时抢购</el-tag></h2>
       <p class="flash-subtitle">超值好物，手慢无！</p>
@@ -205,9 +210,12 @@ const captchaLoading = ref(false)
 
 // 倒计时定时器
 let timer = null
+let fetchPending = false // 防止并发重复请求
 
 // 获取秒杀活动列表
 async function fetchFlashList() {
+  if (fetchPending) return // 上一次请求未完成，跳过
+  fetchPending = true
   loading.value = true
   try {
     const res = await api.get('/flash/list')
@@ -216,6 +224,7 @@ async function fetchFlashList() {
     flashList.value = []
   } finally {
     loading.value = false
+    fetchPending = false
   }
 }
 
@@ -269,8 +278,8 @@ function countdownText(item) {
 
   const diff = targetTime - now
   if (diff <= 0) {
-    // 倒计时到，刷新列表
-    fetchFlashList()
+    // 倒计时到，刷新列表（静默触发，不阻塞渲染）
+    if (!fetchPending) fetchFlashList()
     return '00:00:00'
   }
 
@@ -396,6 +405,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.back-bar { margin-bottom: 8px; }
 .flash-page {
   max-width: 1200px;
   margin: 0 auto;

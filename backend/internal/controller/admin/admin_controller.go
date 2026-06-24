@@ -37,7 +37,16 @@ func NewAdminController(
 	}
 }
 
-// 创建商品
+// CreateProduct 创建商品
+// @Summary      创建商品
+// @Description  管理员创建新商品
+// @Tags         商品管理
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Param        body body request.CreateProductRequest true "商品信息"
+// @Success      200 {object} response.Response
+// @Router       /admin/product [post]
 func (c *AdminController) CreateProduct(ctx *gin.Context) {
 	var req request.CreateProductRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
@@ -54,7 +63,17 @@ func (c *AdminController) CreateProduct(ctx *gin.Context) {
 	response.Success(ctx, resp)
 }
 
-// 更新商品
+// UpdateProduct 更新商品
+// @Summary      更新商品
+// @Description  管理员更新指定商品信息
+// @Tags         商品管理
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Param        id   path     int                          true "商品ID"
+// @Param        body body     request.UpdateProductRequest  true "商品信息"
+// @Success      200 {object} response.Response
+// @Router       /admin/product/{id} [put]
 func (c *AdminController) UpdateProduct(ctx *gin.Context) {
 	idStr := ctx.Param("id")
 	id, err := strconv.Atoi(idStr)
@@ -77,7 +96,16 @@ func (c *AdminController) UpdateProduct(ctx *gin.Context) {
 	response.Success(ctx, nil)
 }
 
-// 删除商品
+// DeleteProduct 删除商品
+// @Summary      删除商品
+// @Description  管理员删除指定商品
+// @Tags         商品管理
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Param        id   path     int    true "商品ID"
+// @Success      200 {object} response.Response
+// @Router       /admin/product/{id} [delete]
 func (c *AdminController) DeleteProduct(ctx *gin.Context) {
 	idStr := ctx.Param("id")
 	id, err := strconv.Atoi(idStr)
@@ -94,7 +122,16 @@ func (c *AdminController) DeleteProduct(ctx *gin.Context) {
 	response.Success(ctx, nil)
 }
 
-// 创建分类
+// CreateCategory 创建分类
+// @Summary      创建分类
+// @Description  管理员创建新商品分类
+// @Tags         分类管理
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Param        body body request.CreateCategoryRequest true "分类信息"
+// @Success      200 {object} response.Response
+// @Router       /admin/category/add [post]
 func (c *AdminController) CreateCategory(ctx *gin.Context) {
 	var req request.CreateCategoryRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
@@ -111,7 +148,17 @@ func (c *AdminController) CreateCategory(ctx *gin.Context) {
 	response.Success(ctx, resp)
 }
 
-// 更新分类
+// UpdateCategory 更新分类
+// @Summary      更新分类
+// @Description  管理员更新指定分类信息
+// @Tags         分类管理
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Param        id   path     int                            true "分类ID"
+// @Param        body body     request.UpdateCategoryRequest  true "分类信息"
+// @Success      200 {object} response.Response
+// @Router       /admin/category/{id} [put]
 func (c *AdminController) UpdateCategory(ctx *gin.Context) {
 	idStr := ctx.Param("id")
 	id, err := strconv.Atoi(idStr)
@@ -134,7 +181,16 @@ func (c *AdminController) UpdateCategory(ctx *gin.Context) {
 	response.Success(ctx, nil)
 }
 
-// 删除分类
+// DeleteCategory 删除分类
+// @Summary      删除分类
+// @Description  管理员删除指定分类
+// @Tags         分类管理
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Param        id   path     int    true "分类ID"
+// @Success      200 {object} response.Response
+// @Router       /admin/category/{id} [delete]
 func (c *AdminController) DeleteCategory(ctx *gin.Context) {
 	idStr := ctx.Param("id")
 	id, err := strconv.Atoi(idStr)
@@ -151,7 +207,16 @@ func (c *AdminController) DeleteCategory(ctx *gin.Context) {
 	response.Success(ctx, nil)
 }
 
-// 上传图片（安全增强版）
+// UploadImage 上传图片
+// @Summary      上传图片
+// @Description  上传商品图片（支持jpg/png/gif，最大10MB，通过文件魔数检测真实类型）
+// @Tags         文件上传
+// @Accept       multipart/form-data
+// @Produce      json
+// @Security     Bearer
+// @Param        image formData file true "图片文件"
+// @Success      200 {object} response.Response
+// @Router       /admin/upload [post]
 func (c *AdminController) UploadImage(ctx *gin.Context) {
 	// 1. 解析上传文件（最大10MB）
 	if err := ctx.Request.ParseMultipartForm(10 << 20); err != nil {
@@ -242,7 +307,15 @@ func (c *AdminController) UploadImage(ctx *gin.Context) {
 	response.Success(ctx, gin.H{"url": imageURL})
 }
 
-// 批量生成商品搜索关键词（管理员操作，为存量商品补充关键词）
+// BatchGenerateKeywords 批量生成商品搜索关键词
+// @Summary      批量生成关键词
+// @Description  管理员为存量商品批量生成搜索关键词
+// @Tags         商品管理
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Success      200 {object} response.Response
+// @Router       /admin/product/batch-keywords [post]
 func (c *AdminController) BatchGenerateKeywords(ctx *gin.Context) {
 	count, err := c.productService.BatchGenerateKeywords()
 	if err != nil {

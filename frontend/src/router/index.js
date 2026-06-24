@@ -9,6 +9,7 @@ const routes = [
   { path: '/product/:id', name: 'ProductDetail', component: () => import('../views/shop/ProductDetail.vue') },
 
   // === 需登录 ===
+  { path: '/profile', name: 'Profile', component: () => import('../views/shop/Profile.vue'), meta: { requiresAuth: true } },
   { path: '/cart', name: 'Cart', component: () => import('../views/shop/Cart.vue'), meta: { requiresAuth: true } },
   { path: '/orders', name: 'Orders', component: () => import('../views/shop/Orders.vue'), meta: { requiresAuth: true } },
 

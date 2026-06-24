@@ -28,7 +28,16 @@ func NewOrderController(
 	}
 }
 
-// 创建订单
+// CreateOrder 创建订单
+// @Summary      创建订单
+// @Description  用户创建新订单
+// @Tags         订单
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Param        body body request.CreateOrderRequest true "订单信息"
+// @Success      200 {object} response.Response
+// @Router       /auth/order/create [post]
 func (c *OrderController) CreateOrder(ctx *gin.Context) {
 	var req request.CreateOrderRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
@@ -46,7 +55,15 @@ func (c *OrderController) CreateOrder(ctx *gin.Context) {
 	response.Success(ctx, resp)
 }
 
-// 获取订单列表
+// GetOrderList 获取订单列表
+// @Summary      获取订单列表
+// @Description  获取当前用户的订单列表
+// @Tags         订单
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Success      200 {object} response.Response
+// @Router       /auth/order/list [get]
 func (c *OrderController) GetOrderList(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
 	resp, err := c.orderService.GetOrderList(userID)
@@ -58,7 +75,16 @@ func (c *OrderController) GetOrderList(ctx *gin.Context) {
 	response.Success(ctx, resp)
 }
 
-// 支付宝统一下单
+// AliPayUnifiedOrder 支付宝统一下单
+// @Summary      支付宝统一下单
+// @Description  生成支付宝支付链接
+// @Tags         支付
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Param        body body request.AliPayUnifiedOrderRequest true "支付请求"
+// @Success      200 {object} response.Response
+// @Router       /auth/order/alipay [post]
 func (c *OrderController) AliPayUnifiedOrder(ctx *gin.Context) {
 	var req request.AliPayUnifiedOrderRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
@@ -76,7 +102,16 @@ func (c *OrderController) AliPayUnifiedOrder(ctx *gin.Context) {
 	response.Success(ctx, gin.H{"pay_url": payURL})
 }
 
-// 获取订单项
+// GetOrderItems 获取订单项
+// @Summary      获取订单详情
+// @Description  获取指定订单的商品明细
+// @Tags         订单
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Param        id   path     int    true "订单ID"
+// @Success      200 {object} response.Response
+// @Router       /auth/order/items/{id} [get]
 func (c *OrderController) GetOrderItems(ctx *gin.Context) {
 	idStr := ctx.Param("id")
 	id, err := strconv.Atoi(idStr)
@@ -95,7 +130,16 @@ func (c *OrderController) GetOrderItems(ctx *gin.Context) {
 	response.Success(ctx, resp)
 }
 
-// 删除订单
+// DeleteOrder 删除订单
+// @Summary      删除订单
+// @Description  用户删除指定订单
+// @Tags         订单
+// @Accept       json
+// @Produce      json
+// @Security     Bearer
+// @Param        id   path     int    true "订单ID"
+// @Success      200 {object} response.Response
+// @Router       /auth/order/delete/{id} [delete]
 func (c *OrderController) DeleteOrder(ctx *gin.Context) {
 	idStr := ctx.Param("id")
 	id, err := strconv.Atoi(idStr)
@@ -113,7 +157,14 @@ func (c *OrderController) DeleteOrder(ctx *gin.Context) {
 	response.Success(ctx, nil)
 }
 
-// 支付宝异步回调接口
+// AliPayNotify 支付宝异步回调接口
+// @Summary      支付宝异步通知
+// @Description  接收支付宝支付结果异步通知（公开接口，无需认证）
+// @Tags         支付
+// @Accept       json
+// @Produce      plain
+// @Success      200 {string} string "success"
+// @Router       /alipay/notify [post]
 func (c *OrderController) AliPayNotify(ctx *gin.Context) {
 	// 解析并验证回调签名
 	noti, err := c.alipayService.ParseNotify(ctx.Request)
@@ -151,7 +202,15 @@ func (c *OrderController) AliPayNotify(ctx *gin.Context) {
 	ctx.String(http.StatusOK, "success")
 }
 
-// 支付宝同步跳转接口
+// AliPayReturn 支付宝同步跳转接口
+// @Summary      支付宝同步跳转
+// @Description  支付完成后支付宝同步跳转回商户页面（公开接口，无需认证）
+// @Tags         支付
+// @Accept       json
+// @Produce      json
+// @Param        out_trade_no query    string false "商户订单号"
+// @Success      200 {object} response.Response
+// @Router       /alipay/success [get]
 func (c *OrderController) AliPayReturn(ctx *gin.Context) {
 	// 1. 验证签名（关键步骤，防止伪造请求）
 	if err := c.alipayService.VerifyReturnSign(ctx.Request); err != nil {

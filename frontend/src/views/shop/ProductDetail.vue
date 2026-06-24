@@ -1,5 +1,10 @@
 <template>
   <div class="product-detail-page">
+    <div class="back-bar">
+      <el-button text @click="$router.back()">
+        <el-icon><ArrowLeft /></el-icon> 返回首页
+      </el-button>
+    </div>
     <!-- 加载状态 -->
     <div v-if="loading" class="loading-wrapper">
       <el-skeleton :rows="8" animated />
@@ -209,6 +214,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.back-bar { margin-bottom: 8px; }
 .product-detail-page {
   max-width: 1200px;
   margin: 0 auto;

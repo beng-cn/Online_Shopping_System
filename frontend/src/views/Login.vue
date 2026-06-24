@@ -1,22 +1,50 @@
 <template>
   <div class="login-page">
     <el-card class="login-card" shadow="always">
-      <h2 style="text-align:center;margin-bottom:24px">用户登录</h2>
+      <!-- 登录/注册切换 -->
+      <div class="tab-row">
+        <span :class="['tab', { active: mode === 'login' }]" @click="switchMode('login')">登录</span>
+        <span class="tab-divider">|</span>
+        <span :class="['tab', { active: mode === 'register' }]" @click="switchMode('register')">注册</span>
+      </div>
 
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="0" size="large">
+      <!-- 登录表单 -->
+      <el-form v-if="mode === 'login'" ref="loginRef" :model="loginForm" :rules="loginRules" label-width="0" size="large">
         <el-form-item prop="username">
-          <el-input v-model="form.username" placeholder="用户名" prefix-icon="User" />
+          <el-input v-model="loginForm.username" placeholder="用户名" />
         </el-form-item>
         <el-form-item prop="password">
-          <el-input v-model="form.password" type="password" placeholder="密码" prefix-icon="Lock" show-password />
+          <el-input v-model="loginForm.password" type="password" placeholder="密码" show-password />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" style="width:100%" :loading="loading" @click="handleLogin">登 录</el-button>
+          <el-button type="primary" style="width:100%" :loading="loginLoading" @click="handleLogin">登 录</el-button>
+        </el-form-item>
+      </el-form>
+
+      <!-- 注册表单 -->
+      <el-form v-else ref="registerRef" :model="registerForm" :rules="registerRules" label-width="0" size="large">
+        <el-form-item prop="username">
+          <el-input v-model="registerForm.username" placeholder="用户名（3-20位）" maxlength="20" />
+        </el-form-item>
+        <el-form-item prop="password">
+          <el-input v-model="registerForm.password" type="password" placeholder="密码（至少6位）" show-password />
+        </el-form-item>
+        <el-form-item prop="confirmPassword">
+          <el-input v-model="registerForm.confirmPassword" type="password" placeholder="确认密码" show-password />
+        </el-form-item>
+        <el-form-item prop="phone">
+          <el-input v-model="registerForm.phone" placeholder="手机号（选填）" maxlength="11" />
+        </el-form-item>
+        <el-form-item prop="email">
+          <el-input v-model="registerForm.email" placeholder="邮箱（选填）" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="success" style="width:100%" :loading="registerLoading" @click="handleRegister">注 册</el-button>
         </el-form-item>
       </el-form>
 
       <div style="text-align:center">
-        <el-link type="primary" @click="showForgot = true">忘记密码？</el-link>
+        <el-link v-if="mode === 'login'" type="primary" @click="showForgot = true">忘记密码？</el-link>
       </div>
     </el-card>
 
@@ -24,10 +52,10 @@
     <el-dialog v-model="showForgot" title="找回密码" width="400px">
       <el-form :model="forgotForm" :rules="forgotRules" ref="forgotRef" label-width="80px">
         <el-form-item label="手机号" prop="phone">
-          <el-input v-model="forgotForm.phone" placeholder="请输入注册时的手机号" maxlength="11" />
+          <el-input v-model="forgotForm.phone" placeholder="注册时的手机号" maxlength="11" />
         </el-form-item>
         <el-form-item label="新密码" prop="new_password">
-          <el-input v-model="forgotForm.new_password" type="password" placeholder="请输入新密码" show-password />
+          <el-input v-model="forgotForm.new_password" type="password" placeholder="新密码" show-password />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -48,28 +76,90 @@ import { ElMessage } from 'element-plus'
 const router = useRouter()
 const userStore = useUserStore()
 
-const form = reactive({ username: '', password: '' })
-const rules = {
+const mode = ref('login')
+
+function switchMode(m) {
+  mode.value = m
+}
+
+// ===== 登录 =====
+const loginForm = reactive({ username: '', password: '' })
+const loginRules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   password: [{ required: true, min: 6, message: '密码至少6位', trigger: 'blur' }],
 }
-const loading = ref(false)
+const loginLoading = ref(false)
 
 async function handleLogin() {
-  loading.value = true
+  loginLoading.value = true
   try {
-    const res = await api.post('/user/login', form)
+    const res = await api.post('/user/login', loginForm)
     userStore.setLogin(res.data)
     ElMessage.success('登录成功')
     router.push(userStore.isAdmin ? '/admin/dashboard' : '/')
   } catch (e) {
-    // 错误已由拦截器处理
+    // 已由拦截器处理
   } finally {
-    loading.value = false
+    loginLoading.value = false
   }
 }
 
-// 找回密码
+// ===== 注册 =====
+const registerForm = reactive({
+  username: '',
+  password: '',
+  confirmPassword: '',
+  phone: '',
+  email: '',
+})
+const validateConfirm = (rule, value, callback) => {
+  if (value !== registerForm.password) {
+    callback(new Error('两次密码不一致'))
+  } else {
+    callback()
+  }
+}
+const registerRules = {
+  username: [
+    { required: true, min: 3, max: 20, message: '用户名3-20位', trigger: 'blur' },
+  ],
+  password: [
+    { required: true, min: 6, message: '密码至少6位', trigger: 'blur' },
+  ],
+  confirmPassword: [
+    { required: true, message: '请确认密码', trigger: 'blur' },
+    { validator: validateConfirm, trigger: 'blur' },
+  ],
+  phone: [
+    { pattern: /^1[3-9]\d{9}$|^$/, message: '手机号格式不正确', trigger: 'blur' },
+  ],
+  email: [
+    { type: 'email', message: '邮箱格式不正确', trigger: 'blur' },
+  ],
+}
+const registerLoading = ref(false)
+
+async function handleRegister() {
+  registerLoading.value = true
+  try {
+    await api.post('/user/register', {
+      username: registerForm.username,
+      password: registerForm.password,
+      phone: registerForm.phone,
+      email: registerForm.email,
+    })
+    ElMessage.success('注册成功，请登录')
+    mode.value = 'login'
+    loginForm.username = registerForm.username
+    loginForm.password = ''
+  } catch (e) {
+    // 已由拦截器处理
+  } finally {
+    registerLoading.value = false
+  }
+}
+
+// ===== 找回密码 =====
 const showForgot = ref(false)
 const forgotLoading = ref(false)
 const forgotForm = reactive({ phone: '', new_password: '' })
@@ -97,5 +187,11 @@ async function handleForgot() {
   display: flex; justify-content: center; align-items: center;
   min-height: 80vh; background: #f5f7fa;
 }
-.login-card { width: 400px; }
+.login-card { width: 420px; }
+.tab-row {
+  text-align: center; margin-bottom: 24px; font-size: 18px;
+}
+.tab { cursor: pointer; color: #909399; padding: 0 12px; }
+.tab.active { color: #409eff; font-weight: bold; }
+.tab-divider { color: #dcdfe6; margin: 0 4px; }
 </style>

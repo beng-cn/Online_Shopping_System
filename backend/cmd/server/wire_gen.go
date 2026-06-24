@@ -18,7 +18,6 @@ import (
 	"backend/internal/pkg/bloom"
 	"backend/internal/pkg/breaker"
 	"backend/internal/pkg/jwt"
-	"backend/internal/pkg/localcache"
 	"backend/internal/pkg/semaphore"
 	"backend/internal/repository/mysql"
 	"backend/internal/repository/redis"
@@ -80,7 +79,6 @@ func InitApp() (*router.Router, error) {
 	flashService := flash.NewFlashService(db, appConfig, flashRepository, flashCache, orderRepository, orderItemRepository, productRepository, productCache)
 	flashController := flash2.NewFlashController(flashService)
 	adminFlashController := flash2.NewAdminFlashController(flashService)
-	localCache := localcache.NewDefault()
-	routerRouter := router.NewRouter(appConfig, jwtUtil, userController, productController, cartController, orderController, categoryController, adminController, flashController, adminFlashController, productService, categoryService, flashService, blacklist, localCache, dbBreaker, dbLimiter)
+	routerRouter := router.NewRouter(appConfig, jwtUtil, userController, productController, cartController, orderController, categoryController, adminController, flashController, adminFlashController, productService, categoryService, flashService, blacklist)
 	return routerRouter, nil
 }

@@ -10,21 +10,23 @@ import (
 	productCtrl "backend/internal/controller/product"
 	userCtrl "backend/internal/controller/user"
 	"backend/internal/middleware"
-	"backend/internal/pkg/breaker"
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/flashlimiter"
 	"backend/internal/pkg/jwt"
-	"backend/internal/pkg/localcache"
-	"backend/internal/pkg/semaphore"
 	"backend/internal/service/category"
 	"backend/internal/service/flash"
 	"backend/internal/service/product"
 	"log"
 	"net/http"
+	"path/filepath"
 	"runtime/debug"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
+
+	_ "backend/docs" // Swagger 生成的接口文档
 )
 
 // 路由管理器
@@ -44,13 +46,8 @@ type Router struct {
 	FlashService         flash.FlashService
 	UserSnatchLimiter    *flashlimiter.UserRateLimiter
 	TokenBlacklist       jwt.TokenBlacklist
-	// 故障处理基础设施
-	LocalCache *localcache.Cache          // L1 本地缓存
-	DBBreaker  *breaker.CircuitBreaker    // 数据库熔断器
-	DBLimiter  *semaphore.Limiter         // 数据库并发信号量
 }
 
-// NewRouter 创建路由管理器，注入所有依赖并初始化 per-user 限流器
 func NewRouter(
 	cfg *config.AppConfig,
 	jwtUtil *jwt.JWTUtil,
@@ -66,9 +63,6 @@ func NewRouter(
 	categoryService category.CategoryService,
 	flashService flash.FlashService,
 	blacklist jwt.TokenBlacklist,
-	localCache *localcache.Cache,
-	dbBreaker *breaker.CircuitBreaker,
-	dbLimiter *semaphore.Limiter,
 ) *Router {
 	snatchLimiter := flashlimiter.NewUserRateLimiter(1, 1)
 	flashService.SetUserLimiter(snatchLimiter)
@@ -89,9 +83,6 @@ func NewRouter(
 		FlashService:         flashService,
 		UserSnatchLimiter:    snatchLimiter,
 		TokenBlacklist:       blacklist,
-		LocalCache:           localCache,
-		DBBreaker:            dbBreaker,
-		DBLimiter:            dbLimiter,
 	}
 }
 
@@ -114,6 +105,9 @@ func (r *Router) Setup() *gin.Engine {
 			"time":   time.Now().Format("2006-01-02 15:04:05"),
 		})
 	})
+
+	// Swagger 接口文档
+	engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	engine.Static("/uploads", "./uploads")
 
@@ -165,7 +159,7 @@ func (r *Router) Setup() *gin.Engine {
 
 		flashAuthGroup := auth.Group("/flash")
 		{
-			flashAuthGroup.GET("/captcha", r.FlashController.GenerateCaptcha)  // 验证码
+			flashAuthGroup.GET("/captcha", r.FlashController.GenerateCaptcha) // 验证码
 			flashAuthGroup.POST("/enter", r.FlashController.EnterFlashSale)
 			flashAuthGroup.POST("/snatch", r.FlashController.SnatchFlashSale)
 			flashAuthGroup.GET("/orders", r.FlashController.GetUserFlashOrders)
@@ -205,6 +199,16 @@ func (r *Router) Setup() *gin.Engine {
 			flashAdminGroup.GET("/list", r.AdminFlashController.ListAllFlashSales)
 		}
 	}
+
+	// === 前端 SPA 静态文件（生产模式：后端直接托管 Vue 构建产物）===
+	frontendDist := "../frontend/dist"
+	engine.Static("/assets", filepath.Join(frontendDist, "assets"))
+	engine.StaticFile("/favicon.svg", filepath.Join(frontendDist, "favicon.svg"))
+	engine.StaticFile("/icons.svg", filepath.Join(frontendDist, "icons.svg"))
+	// 无匹配路由回退到 index.html，由 Vue Router 接管前端路由
+	engine.NoRoute(func(c *gin.Context) {
+		c.File(filepath.Join(frontendDist, "index.html"))
+	})
 
 	return engine
 }

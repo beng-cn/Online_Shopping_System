@@ -1,5 +1,10 @@
 <template>
   <div class="orders-page">
+    <div class="back-bar">
+      <el-button text @click="$router.back()">
+        <el-icon><ArrowLeft /></el-icon> 返回上一级
+      </el-button>
+    </div>
     <h2 class="page-title">我的订单</h2>
 
     <div v-loading="loading" class="orders-content">
@@ -125,6 +130,7 @@ onMounted(() => fetchOrderList())
 </script>
 
 <style scoped>
+.back-bar { margin-bottom: 8px; }
 .orders-page { max-width: 1200px; margin: 0 auto; }
 .page-title { font-size: 22px; font-weight: 600; margin-bottom: 20px; color: #303133; }
 .orders-content { min-height: 400px; }

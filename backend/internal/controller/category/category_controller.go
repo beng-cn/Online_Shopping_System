@@ -18,7 +18,14 @@ func NewCategoryController(categoryService category.CategoryService) *CategoryCo
 	return &CategoryController{categoryService: categoryService}
 }
 
-// 获取所有父分类
+// GetParentCategories 获取所有父分类
+// @Summary 获取所有父分类
+// @Description 获取所有顶级商品分类列表（parent_id 为 0 的分类）
+// @Tags 分类
+// @Accept json
+// @Produce json
+// @Success 200 {object} response.Response "查询成功"
+// @Router /product/category/parents [get]
 func (c *CategoryController) GetParentCategories(ctx *gin.Context) {
 	resp, err := c.categoryService.GetParentCategories()
 	if err != nil {
@@ -29,7 +36,16 @@ func (c *CategoryController) GetParentCategories(ctx *gin.Context) {
 	response.Success(ctx, resp)
 }
 
-// 获取子分类
+// GetChildCategories 获取子分类
+// @Summary 获取子分类
+// @Description 根据父分类ID获取其下所有子分类列表
+// @Tags 分类
+// @Accept json
+// @Produce json
+// @Param parent_id query int true "父分类ID"
+// @Success 200 {object} response.Response "查询成功"
+// @Failure 400 {object} response.Response "父分类ID无效"
+// @Router /product/category/children [get]
 func (c *CategoryController) GetChildCategories(ctx *gin.Context) {
 	parentIDStr := ctx.Query("parent_id")
 	parentID, err := strconv.Atoi(parentIDStr)

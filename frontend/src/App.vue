@@ -24,6 +24,9 @@
           <template #title>
             <el-icon><UserFilled /></el-icon> {{ userStore.username }}
           </template>
+          <el-menu-item index="profile" @click="$router.push('/profile')">
+            <el-icon><User /></el-icon> 个人信息
+          </el-menu-item>
           <el-menu-item index="logout" @click="handleLogout">
             <span class="logout-text">退出登录</span>
           </el-menu-item>

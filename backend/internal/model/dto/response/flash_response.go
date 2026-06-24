@@ -16,6 +16,7 @@ type FlashSaleListResponse struct {
 	EndTime     string  `json:"end_time"`
 	Status      int     `json:"status"`
 	Image       string  `json:"image"`
+	ServerTime  string  `json:"server_time"`  // 服务器当前时间，前端倒计时同步用
 }
 
 // 秒杀详情响应（含倒计时信息）
