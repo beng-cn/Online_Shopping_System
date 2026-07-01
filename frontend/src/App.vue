@@ -38,14 +38,13 @@
     <div v-else class="top-bar-guest">
       <span class="brand" @click="$router.push('/')">🛒 在线商城</span>
       <div>
-        <el-button type="warning" @click="$router.push('/flash')">🔥 秒杀</el-button>
         <el-button type="primary" @click="$router.push('/login')">登录</el-button>
       </div>
     </div>
 
-    <!-- 页面内容 -->
+    <!-- 页面内容：:key 确保不同路由强制重建组件，防止登录后残留旧页面 -->
     <div class="page-container">
-      <router-view />
+      <router-view :key="$route.fullPath" />
     </div>
 
     <!-- 管理员 PIN 二次验证弹窗 -->

@@ -18,7 +18,6 @@ import (
 	"backend/internal/service/product"
 	"log"
 	"net/http"
-	"path/filepath"
 	"runtime/debug"
 	"time"
 
@@ -199,16 +198,6 @@ func (r *Router) Setup() *gin.Engine {
 			flashAdminGroup.GET("/list", r.AdminFlashController.ListAllFlashSales)
 		}
 	}
-
-	// === 前端 SPA 静态文件（生产模式：后端直接托管 Vue 构建产物）===
-	frontendDist := "../frontend/dist"
-	engine.Static("/assets", filepath.Join(frontendDist, "assets"))
-	engine.StaticFile("/favicon.svg", filepath.Join(frontendDist, "favicon.svg"))
-	engine.StaticFile("/icons.svg", filepath.Join(frontendDist, "icons.svg"))
-	// 无匹配路由回退到 index.html，由 Vue Router 接管前端路由
-	engine.NoRoute(func(c *gin.Context) {
-		c.File(filepath.Join(frontendDist, "index.html"))
-	})
 
 	return engine
 }

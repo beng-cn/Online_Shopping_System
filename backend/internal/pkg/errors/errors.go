@@ -35,6 +35,7 @@ const (
 	CodeFlashSaleCancelled   = 2006 // 秒杀活动已取消
 	CodeFlashQueueFull       = 2007 // 排队人数已满
 	CodeFlashNotEntered      = 2008 // 未获取入场资格
+	CodeFlashTooFrequent     = 2009 // 操作过于频繁（per-user限流）
 )
 
 // 自定义错误类型

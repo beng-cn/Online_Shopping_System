@@ -67,7 +67,7 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../stores/user'
 import api from '../api'
@@ -96,7 +96,21 @@ async function handleLogin() {
     const res = await api.post('/user/login', loginForm)
     userStore.setLogin(res.data)
     ElMessage.success('登录成功')
-    router.push(userStore.isAdmin ? '/admin/dashboard' : '/')
+    const targetPath = '/'
+    // nextTick 确保 Vue 先完成导航栏的响应式更新，再执行路由跳转
+    // 避免状态更新与路由切换在同一微任务中相互竞争
+    await nextTick()
+    try {
+      await router.replace(targetPath)
+    } catch (navErr) {
+      // replace 被取消（如同路由跳转或守卫拦截），直接整页跳转
+      console.warn('路由跳转被拦截，切换整页跳转:', navErr)
+      window.location.href = targetPath
+    }
+    // 兜底：若路由确实变了但组件未刷新，强制跳转
+    if (router.currentRoute.value.path === '/login') {
+      window.location.href = targetPath
+    }
   } catch (e) {
     // 已由拦截器处理
   } finally {

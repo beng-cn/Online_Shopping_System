@@ -60,7 +60,7 @@ func (r *flashRepository) GetByID(id uint) (*entity.FlashSale, error) {
 // GetByProductID 根据商品ID查询秒杀活动
 func (r *flashRepository) GetByProductID(productID uint) (*entity.FlashSale, error) {
 	var flash entity.FlashSale
-	if err := r.db.Where("product_id = ?", productID).First(&flash).Error; err != nil {
+	if err := r.db.Preload("Product").Where("product_id = ?", productID).First(&flash).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, errors.New(errors.CodeFlashSaleNotFound, "秒杀活动不存在")
 		}

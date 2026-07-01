@@ -25,7 +25,11 @@ func New() *Inventory {
 func (inv *Inventory) Init(flashSaleID uint, stock int) {
 	entry := &inventoryEntry{}
 	entry.remaining.Store(int32(stock))
-	entry.soldOut.Store(false)
+	if stock > 0 {
+		entry.soldOut.Store(false)
+	} else {
+		entry.soldOut.Store(true) // 库存为0时立即标记售罄，避免本地快速拒绝失效
+	}
 	inv.data.Store(flashSaleID, entry)
 }
 
@@ -50,6 +54,16 @@ func (inv *Inventory) IsSoldOut(flashSaleID uint) bool {
 		return false // 未初始化的活动，由 Redis 判断
 	}
 	return val.(*inventoryEntry).soldOut.Load()
+}
+
+// SetSoldOut 直接设置售罄标记（库存为0时调用，避免本地快速拒绝失效）
+func (inv *Inventory) SetSoldOut(flashSaleID uint) {
+	val, ok := inv.data.Load(flashSaleID)
+	if !ok {
+		inv.Init(flashSaleID, 0)
+		return // Init 已设 soldOut=true
+	}
+	val.(*inventoryEntry).soldOut.Store(true)
 }
 
 // ResetSoldOut 重置售罄标记（超时释放或库存回补时调用）

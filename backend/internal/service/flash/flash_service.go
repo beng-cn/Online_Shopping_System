@@ -164,12 +164,17 @@ func (s *flashService) UpdateFlashSale(id uint, req *request.UpdateFlashSaleRequ
 		return errors.New(errors.CodeFlashSaleCancelled, "已结束或已取消的活动无法修改")
 	}
 
+	// 保存旧库存值，用于后续同步 Redis
+	oldFlashStock := flash.FlashStock
+
 	// 仅更新非零字段
 	if req.FlashPrice > 0 {
 		flash.FlashPrice = req.FlashPrice
 	}
+	stockChanged := false
 	if req.FlashStock > 0 {
 		flash.FlashStock = req.FlashStock
+		stockChanged = true
 	}
 	if req.QueueCap >= 0 {
 		flash.QueueCap = req.QueueCap
@@ -194,7 +199,35 @@ func (s *flashService) UpdateFlashSale(id uint, req *request.UpdateFlashSaleRequ
 
 	// 修改成功后主动失效活动缓存，防止前端读到过期数据
 	s.flashCache.DeleteFlashInfo(id)
-	return s.flashRepo.Update(flash)
+	if err := s.flashRepo.Update(flash); err != nil {
+		return err
+	}
+
+	// 库存变更时同步 Redis：new_redis = new_db - already_sold
+	if stockChanged {
+		redisRemaining, err := s.flashCache.GetRemainingStock(id)
+		if err == nil && redisRemaining >= 0 {
+			// already_sold = old_stock - old_redis_remaining
+			alreadySold := oldFlashStock - int(redisRemaining)
+			if alreadySold < 0 {
+				alreadySold = 0
+			}
+			newRedisStock := flash.FlashStock - alreadySold
+			if newRedisStock < 0 {
+				newRedisStock = 0
+			}
+			if err := s.flashCache.SetFlashStock(id, int64(newRedisStock)); err != nil {
+				log.Printf("⚠️ 更新秒杀库存后同步Redis失败: id=%d err=%v", id, err)
+			} else {
+				log.Printf("🔧 活动%d库存变更: DB %d→%d, Redis已同步为%d", id, oldFlashStock, flash.FlashStock, newRedisStock)
+				if newRedisStock > 0 {
+					s.flashCache.DeleteFlashSoldOut(id)
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // WarmUpFlashSale 预热秒杀库存到Redis
@@ -209,6 +242,16 @@ func (s *flashService) WarmUpFlashSale(id uint) error {
 		return errors.New(errors.CodeParamError, "仅未开始或进行中的活动可以预热")
 	}
 
+	// 幂等保护：若库存 Key 已存在（已预热过），跳过库存覆盖防止已扣减库存被重置
+	stockExists, err := s.flashCache.StockKeyExists(id)
+	if err != nil {
+		return err
+	}
+	if stockExists && flash.Status == 1 {
+		log.Printf("📋 秒杀活动 %d 已预热过（Redis库存Key存在且活动进行中），跳过库存覆盖", id)
+		return nil
+	}
+
 	// 计算排队上限
 	queueCap := flash.QueueCap
 	if queueCap == 0 {
@@ -218,7 +261,7 @@ func (s *flashService) WarmUpFlashSale(id uint) error {
 		}
 	}
 
-	// 1. 预热库存到Redis
+	// 1. 预热库存到Redis（仅在 Key 不存在时写入，防止覆盖）
 	if err := s.flashCache.WarmUpStock(id, flash.FlashStock); err != nil {
 		return err
 	}
@@ -392,6 +435,21 @@ func (s *flashService) EnterFlashSale(userID uint, req *request.FlashEnterReques
 		time.Sleep(time.Duration(n.Int64()) * time.Millisecond)
 	}
 
+	// per-user 限流：防止恶意用户高频调用 enter 接口刷爆排队计数
+	if s.userLimiter != nil && !s.userLimiter.Allow(userID) {
+		return nil, errors.New(errors.CodeFlashTooFrequent, "操作过于频繁，请稍后再试")
+	}
+
+	// 重复入场检查：若用户已入场，直接返回当前排队信息，避免重复递增计数
+	if admitted, err := s.flashCache.IsUserAdmitted(req.FlashSaleID, userID); err == nil && admitted {
+		count, _ := s.flashCache.GetQueueCount(req.FlashSaleID)
+		return &response.FlashEnterResponse{
+			Admitted:    true,
+			QueueNumber: count,
+			Message:     "您已入场，请继续抢购",
+		}, nil
+	}
+
 	// 计算排队上限
 	queueCap := flash.QueueCap
 	if queueCap == 0 {
@@ -427,7 +485,12 @@ func (s *flashService) EnterFlashSale(userID uint, req *request.FlashEnterReques
 
 	// 记录入场资格
 	if err := s.flashCache.AddAdmittedUser(req.FlashSaleID, userID); err != nil {
-		log.Printf("⚠️ 记录入场资格失败: %v", err)
+		log.Printf("⚠️ 记录入场资格失败，回滚排队计数: flashSaleID=%d userID=%d err=%v", req.FlashSaleID, userID, err)
+		// 入场资格记录失败时回滚排队计数，避免用户陷入"已入场但不能抢"的死锁
+		if _, decrErr := s.flashCache.DecrQueueCount(req.FlashSaleID); decrErr != nil {
+			log.Printf("⚠️ 排队计数回滚失败: %v", decrErr)
+		}
+		return nil, errors.New(errors.CodeServerError, "系统繁忙，请重试")
 	}
 
 	return &response.FlashEnterResponse{
@@ -515,7 +578,7 @@ func (s *flashService) SnatchFlashSale(userID uint, req *request.FlashSnatchRequ
 	case 1:
 		// 库存不足 → 设置全局 + 本地售罄标记
 		s.flashCache.SetFlashSoldOut(req.FlashSaleID) // Redis 全局（多实例即时可见）
-		s.inventory.Init(req.FlashSaleID, 0)           // 本地内存优化
+		s.inventory.SetSoldOut(req.FlashSaleID)        // 本地内存优化（正确设 soldOut=true）
 		return &response.FlashSnatchResponse{Success: false, Message: "秒杀商品已售罄"}, nil
 	case 2:
 		return &response.FlashSnatchResponse{Success: false, Message: "您已参与过该秒杀"}, nil
@@ -1033,6 +1096,16 @@ func (s *flashService) ReconcileStock() {
 	if redisRemaining > 0 && s.inventory.IsSoldOut(f.ID) {
 		s.inventory.ResetSoldOut(f.ID)
 		log.Printf("🔧 自愈-活动%d: 本地售罄标记已重置（Redis剩余=%d）", f.ID, redisRemaining)
+	}
+
+	// 特殊处理：Redis 返回剩余=0 但 DB 也无订单 → 可能 Key 根本不存在（从未预热）
+	// GetRemainingStock 对"Key 不存在"和"库存为0"都返回0，需通过 EXISTS 区分
+	if redisRemaining == 0 && dbSold == 0 {
+		exists, existsErr := s.flashCache.StockKeyExists(f.ID)
+		if existsErr == nil && !exists {
+			log.Printf("⚠️ 活动%d: Redis库存Key不存在且DB无订单，跳过对账（活动可能从未预热或Redis数据丢失）", f.ID)
+			continue
+		}
 	}
 
 	if redisSold != dbSold {

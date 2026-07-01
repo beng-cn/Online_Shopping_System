@@ -27,6 +27,7 @@ type FlashCache interface {
 	AtomicDeductStock(flashSaleID uint, userID uint) (int64, int64, error) // Lua原子扣减：返回(code, remaining)
 	RollbackDeduct(flashSaleID uint, userID uint) error                    // 回滚扣减（DB写入失败时调用）
 	GetRemainingStock(flashSaleID uint) (int64, error)                      // 查询剩余库存
+	StockKeyExists(flashSaleID uint) (bool, error)                          // 检查库存Key是否存在（区分"Key不存在"和"库存为0"）
 	SetFlashStock(flashSaleID uint, stock int64) error                     // 设置剩余库存（对账修正用）
 	AtomicSetStock(flashSaleID uint, expected int64, newVal int64) (int64, int64, error) // Lua原子CAS设置库存（对账修正用）
 	GetDeductTrackUsers(flashSaleID uint) ([]string, error)                             // 获取已购追踪列表（崩溃恢复短期窗口用）
@@ -93,6 +94,7 @@ var atomicDeductScript = redis.NewScript(`
 
 	redis.call('DECR', stock_key)
 	redis.call('SADD', user_key, user_id)
+	redis.call('EXPIRE', user_key, 172800)  -- 48h TTL，防止异常退出后 Set 永久残留
 	-- 追加到已购追踪列表，TTL 5分钟（短期恢复窗口，超时后由 pending 机制兜底）
 	redis.call('RPUSH', track_key, user_id)
 	redis.call('EXPIRE', track_key, 300)
@@ -126,7 +128,9 @@ var atomicSetStockScript = redis.NewScript(`
 
 	local current = redis.call('GET', stock_key)
 	if current == false then
-		return {0, 0}
+		-- Key 不存在（从未预热或 Redis 数据丢失），无并发扣减可冲突，直接创建
+		redis.call('SET', stock_key, new_val)
+		return {1, new_val}
 	end
 	current = tonumber(current)
 	if current == expected then
@@ -165,8 +169,17 @@ func (c *flashCache) IncrQueueCount(flashSaleID uint) (int64, error) {
 }
 
 // DecrQueueCount 原子递减排队计数（入场被拒时释放名额）
+// 若 Key 不存在则直接返回 0，避免 Redis DECR 自动创建值为 -1 的 Key
 func (c *flashCache) DecrQueueCount(flashSaleID uint) (int64, error) {
-	count, err := c.client.Decr(c.ctx, queueKey(flashSaleID)).Result()
+	key := queueKey(flashSaleID)
+	exists, err := c.client.Exists(c.ctx, key).Result()
+	if err != nil {
+		return 0, err
+	}
+	if exists == 0 {
+		return 0, nil
+	}
+	count, err := c.client.Decr(c.ctx, key).Result()
 	if err != nil {
 		return 0, fmt.Errorf("排队计数递减失败: %w", err)
 	}
@@ -234,8 +247,14 @@ func (c *flashCache) AtomicDeductStock(flashSaleID uint, userID uint) (int64, in
 		return 0, 0, fmt.Errorf("Lua脚本返回格式异常: %v", result)
 	}
 
-	code, _ := vals[0].(int64)
-	remaining, _ := vals[1].(int64)
+	code, ok := vals[0].(int64)
+	if !ok {
+		return 0, 0, fmt.Errorf("Lua脚本code类型断言失败: got %T", vals[0])
+	}
+	remaining, ok := vals[1].(int64)
+	if !ok {
+		return 0, 0, fmt.Errorf("Lua脚本remaining类型断言失败: got %T", vals[1])
+	}
 	return code, remaining, nil
 }
 
@@ -266,6 +285,17 @@ func (c *flashCache) GetRemainingStock(flashSaleID uint) (int64, error) {
 	}
 	return val, err
 }
+
+// StockKeyExists 检查库存Key是否存在于Redis中
+// 用于区分"Key从未创建（未预热）"和"库存已售罄（值为0）"两种状态
+func (c *flashCache) StockKeyExists(flashSaleID uint) (bool, error) {
+	count, err := c.client.Exists(c.ctx, stockKey(flashSaleID)).Result()
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // SetFlashStock 设置Redis 中剩余秒杀库存（对账修正用）
 func (c *flashCache) SetFlashStock(flashSaleID uint, stock int64) error {
 	return c.client.Set(c.ctx, stockKey(flashSaleID), stock, 48*time.Hour).Err()
@@ -287,8 +317,14 @@ func (c *flashCache) AtomicSetStock(flashSaleID uint, expected int64, newVal int
 	if !ok || len(arr) < 2 {
 		return 0, 0, fmt.Errorf("CAS脚本返回值格式错误: %v", result)
 	}
-	code := arr[0].(int64)
-	val := arr[1].(int64)
+	code, ok := arr[0].(int64)
+	if !ok {
+		return 0, 0, fmt.Errorf("CAS脚本code类型断言失败: got %T", arr[0])
+	}
+	val, ok := arr[1].(int64)
+	if !ok {
+		return 0, 0, fmt.Errorf("CAS脚本val类型断言失败: got %T", arr[1])
+	}
 	return code, val, nil
 }
 
@@ -515,17 +551,29 @@ func (c *flashCache) SetCaptcha(captchaID, answer string, ttl time.Duration) err
 	return c.client.Set(c.ctx, captchaKey(captchaID), answer, ttl).Err()
 }
 
-// GetAndDeleteCaptcha 原子操作：获取并立即删除（防重复使用）
+// ==================== Lua 原子获取并删除验证码脚本 ====================
+var getAndDeleteCaptchaScript = redis.NewScript(`
+	local key = KEYS[1]
+	local answer = redis.call('GET', key)
+	if answer == false then
+		return ""
+	end
+	redis.call('DEL', key)
+	return answer
+`)
+
+// GetAndDeleteCaptcha 原子操作：获取并立即删除（Lua保证GET+DEL原子性，防并发重复使用）
 func (c *flashCache) GetAndDeleteCaptcha(captchaID string) (string, error) {
 	key := captchaKey(captchaID)
-	pipe := c.client.TxPipeline()
-	getCmd := pipe.Get(c.ctx, key)
-	pipe.Del(c.ctx, key)
-	_, err := pipe.Exec(c.ctx)
+	result, err := getAndDeleteCaptchaScript.Run(c.ctx, c.client, []string{key}).Result()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("验证码操作失败: %w", err)
 	}
-	return getCmd.Val(), nil
+	answer, ok := result.(string)
+	if !ok {
+		return "", nil // key不存在时Lua返回空字符串
+	}
+	return answer, nil
 }
 
 // ==================== 辅助序列化方法 ====================

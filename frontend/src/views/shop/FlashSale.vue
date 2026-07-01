@@ -108,14 +108,14 @@
     <!-- 排队/抢购结果弹窗 -->
     <el-dialog
       v-model="queueDialogVisible"
-      title="排队入场"
+      :title="admitted ? '入场成功' : '排队入场'"
       width="480px"
       :close-on-click-modal="false"
       :show-close="true"
     >
       <div class="queue-dialog-body">
         <el-result
-          v-if="admitted && !captchaId"
+          v-if="admitted && !captchaId && !captchaError"
           icon="success"
           title="入场成功"
           sub-title="正在加载验证码..."
@@ -127,10 +127,16 @@
           sub-title="请输入验证码完成抢购"
         />
         <el-result
+          v-else-if="admitted && captchaError"
+          icon="warning"
+          title="验证码加载失败"
+          sub-title="请点击下方按钮重试获取验证码"
+        />
+        <el-result
           v-else
           icon="warning"
-          title="排队中"
-          :sub-title="enterMessage || '当前人数较多，请稍后再试...'"
+          title="入场未成功"
+          :sub-title="enterMessage || '当前人数已满，请稍后重试'"
         />
 
         <div v-if="enterQueueNumber" class="queue-number">
@@ -163,6 +169,13 @@
             class="captcha-input"
             @keyup.enter="handleSnatch"
           />
+        </div>
+
+        <!-- 验证码加载失败重试区域 -->
+        <div v-if="admitted && captchaError" class="captcha-area">
+          <el-button type="primary" :loading="captchaLoading" @click="fetchCaptcha">
+            重新获取验证码
+          </el-button>
         </div>
       </div>
 
@@ -207,14 +220,19 @@ const captchaId = ref('')
 const captchaImage = ref('')
 const captchaAnswer = ref('')
 const captchaLoading = ref(false)
+const captchaError = ref(false)
 
 // 倒计时定时器
 let timer = null
 let fetchPending = false // 防止并发重复请求
 
 // 获取秒杀活动列表
+let lastFetchTime = 0
 async function fetchFlashList() {
-  if (fetchPending) return // 上一次请求未完成，跳过
+  if (fetchPending) return
+  const now = Date.now()
+  if (now - lastFetchTime < 3000) return // 冷却 3 秒，防止 countdownText 重渲染触发死循环
+  lastFetchTime = now
   fetchPending = true
   loading.value = true
   try {
@@ -269,7 +287,7 @@ function formatPrice(price) {
   return Number(price).toFixed(2)
 }
 
-// 倒计时文本（每秒刷新）
+// 倒计时文本（纯展示函数，不含副作用）
 function countdownText(item) {
   const now = getServerTime()
   const targetTime = item.status === 0
@@ -277,11 +295,7 @@ function countdownText(item) {
     : new Date(item.end_time).getTime()
 
   const diff = targetTime - now
-  if (diff <= 0) {
-    // 倒计时到，刷新列表（静默触发，不阻塞渲染）
-    if (!fetchPending) fetchFlashList()
-    return '00:00:00'
-  }
+  if (diff <= 0) return '00:00:00'
 
   const hours = Math.floor(diff / 3600000)
   const minutes = Math.floor((diff % 3600000) / 60000)
@@ -297,6 +311,7 @@ function countdownText(item) {
 // 获取验证码
 async function fetchCaptcha() {
   captchaLoading.value = true
+  captchaError.value = false
   try {
     const res = await api.get('/auth/flash/captcha')
     const data = res.data
@@ -304,7 +319,9 @@ async function fetchCaptcha() {
     captchaImage.value = data.captcha_image
     captchaAnswer.value = ''
   } catch (e) {
-    ElMessage.error('验证码加载失败，请刷新重试')
+    captchaId.value = ''        // 清除旧验证码ID，防止与 captchaError 共存导致 UI 冲突
+    captchaError.value = true
+    ElMessage.error('验证码加载失败，请点击下方按钮重试')
   } finally {
     captchaLoading.value = false
   }
@@ -371,25 +388,40 @@ async function handleSnatch() {
     if (data.success) {
       ElMessage.success(`抢购成功！订单号：${data.order_no}`)
       closeQueueDialog()
-      // 刷新秒杀列表以更新库存
       fetchFlashList()
     } else {
-      ElMessage.warning(data.message || '抢购失败')
-      // 抢购失败刷新验证码（旧验证码可能已被消费）
-      fetchCaptcha()
+      const msg = data.message || '抢购失败'
+      ElMessage.warning(msg)
+      // 售罄/已参与等终态 → 关闭弹窗，不再刷新验证码
+      if (msg.includes('售罄') || msg.includes('已参与') || msg.includes('已结束')) {
+        closeQueueDialog()
+      } else {
+        fetchCaptcha() // 其他失败刷新验证码重试
+      }
     }
   } catch (e) {
-    // 错误已由拦截器处理，刷新验证码
-    fetchCaptcha()
+    // 网络异常等 → 不刷新验证码（可能是服务器问题，刷新也没用）
+    closeQueueDialog()
   } finally {
     snatching.value = false
   }
 }
 
-// 每秒刷新倒计时
+// 每秒刷新倒计时，并检测倒计时归零自动刷新列表
 function startCountdown() {
   timer = setInterval(() => {
-    // 强制触发视图更新（依赖 server_time 的变量）
+    // 检测是否有活动倒计时归零（开始或结束），若有则静默刷新列表
+    const now = getServerTime()
+    for (const item of flashList.value) {
+      const targetTime = item.status === 0
+        ? new Date(item.start_time).getTime()
+        : new Date(item.end_time).getTime()
+      if (targetTime - now <= 0) {
+        fetchFlashList()
+        break // 一次只触发一次刷新
+      }
+    }
+    // 强制触发视图更新（倒计时文本用）
     flashList.value = [...flashList.value]
   }, 1000)
 }
