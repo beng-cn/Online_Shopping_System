@@ -19,7 +19,6 @@ import (
 	"log"
 	"net/http"
 	"runtime/debug"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -95,15 +94,20 @@ func (r *Router) Setup() *gin.Engine {
 	engine.Use(middleware.Cors())
 	engine.Use(CustomRecovery())
 
+	// 添加监控中间件（在请求处理之前）
+	engine.Use(middleware.Monitor(r.Config, nil, nil))
+
 	limiter := middleware.NewRateLimiter(200, 300)
 	engine.Use(limiter.Handler())
 
-	engine.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status": "ok",
-			"time":   time.Now().Format("2006-01-02 15:04:05"),
-		})
-	})
+	// 健康检查和监控接口
+	engine.GET("/health", middleware.HealthCheck(r.Config, nil, nil))
+	engine.GET("/api/v1/admin/health", middleware.HealthCheck(r.Config, nil, nil))
+	engine.GET("/api/v1/admin/metrics", middleware.MetricsHandler(nil, nil))
+
+	// 添加错误跟踪中间件（在管理员路由中）
+	adminGroup := engine.Group("/api/v1/admin")
+	adminGroup.Use(middleware.LogErrorTracker())
 
 	// Swagger 接口文档
 	engine.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -166,7 +170,6 @@ func (r *Router) Setup() *gin.Engine {
 	}
 
 	// === 管理员接口 ===
-	adminGroup := engine.Group("/api/v1/admin")
 	adminGroup.Use(middleware.AdminAuth(r.JWTUtil, r.TokenBlacklist))
 	{
 		adminGroup.POST("/product", r.AdminController.CreateProduct)

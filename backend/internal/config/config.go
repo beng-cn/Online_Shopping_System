@@ -11,13 +11,14 @@ import (
 var App *AppConfig
 
 type AppConfig struct {
-	Server    ServerConfig    `mapstructure:"server"`
-	MySQL     MySQLConfig     `mapstructure:"mysql"`
-	Redis     RedisConfig     `mapstructure:"redis"`
-	JWT       JWTConfig       `mapstructure:"jwt"`
-	Alipay    AlipayConfig    `mapstructure:"alipay"`
-	Cache     CacheConfig     `mapstructure:"cache"`
-	FlashSale FlashSaleConfig `mapstructure:"flash_sale"` // 秒杀配置
+	Server     ServerConfig      `mapstructure:"server"`
+	MySQL      MySQLConfig       `mapstructure:"mysql"`
+	Redis      RedisConfig       `mapstructure:"redis"`
+	JWT        JWTConfig         `mapstructure:"jwt"`
+	Alipay     AlipayConfig      `mapstructure:"alipay"`
+	Cache      CacheConfig       `mapstructure:"cache"`
+	FlashSale  FlashSaleConfig    `mapstructure:"flash_sale"`  // 秒杀配置
+	DBPool     DBPoolConfig       `mapstructure:"db_pool"`    // 数据库连接池配置
 }
 
 type CacheConfig struct {
@@ -65,6 +66,14 @@ type AlipayConfig struct {
 	PublicKey  string `mapstructure:"public_key"`
 	NotifyURL  string `mapstructure:"notify_url"`
 	ReturnURL  string `mapstructure:"return_url"`
+}
+
+// DBPoolConfig 数据库连接池配置
+type DBPoolConfig struct {
+	MaxOpenConns    int `mapstructure:"max_open_conns"`
+	MaxIdleConns   int `mapstructure:"max_idle_conns"`
+	ConnMaxLifetime int `mapstructure:"conn_max_lifetime"`
+	ConnMaxIdleTime int `mapstructure:"conn_max_idle_time"`
 }
 
 // DSN 生成 MySQL 连接字符串（格式: user:password@tcp(host:port)/db?charset=utf8mb4&parseTime=true）

@@ -36,10 +36,30 @@ func InitDB(cfg *config.AppConfig) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	sqlDB.SetMaxOpenConns(50)                 // 最大打开连接数
-	sqlDB.SetMaxIdleConns(10)                 // 最大空闲连接数
-	sqlDB.SetConnMaxLifetime(1 * time.Hour)   // 连接最大存活时间
-	sqlDB.SetConnMaxIdleTime(10 * time.Minute) // 空闲连接最大存活时间
+
+	// 使用配置文件中的连接池参数，如果未配置则使用默认值
+	maxOpenConns := 50
+	maxIdleConns := 10
+	connMaxLifetime := 1 * time.Hour
+	connMaxIdleTime := 10 * time.Minute
+
+	if cfg.DBPool.MaxOpenConns > 0 {
+		maxOpenConns = cfg.DBPool.MaxOpenConns
+	}
+	if cfg.DBPool.MaxIdleConns > 0 {
+		maxIdleConns = cfg.DBPool.MaxIdleConns
+	}
+	if cfg.DBPool.ConnMaxLifetime > 0 {
+		connMaxLifetime = time.Duration(cfg.DBPool.ConnMaxLifetime) * time.Second
+	}
+	if cfg.DBPool.ConnMaxIdleTime > 0 {
+		connMaxIdleTime = time.Duration(cfg.DBPool.ConnMaxIdleTime) * time.Second
+	}
+
+	sqlDB.SetMaxOpenConns(maxOpenConns)
+	sqlDB.SetMaxIdleConns(maxIdleConns)
+	sqlDB.SetConnMaxLifetime(connMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(connMaxIdleTime)
 
 	return db, nil
 }

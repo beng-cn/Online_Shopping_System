@@ -31,6 +31,7 @@ Thumbs.db
 # 敏感信息
 账密.txt
 test_flash_api.py
+.env
 
 # Swagger 自动生成文档（每次 swag init 重建）
 docs/docs.go

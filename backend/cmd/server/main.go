@@ -22,9 +22,19 @@ import (
 	"time"
 
 	"backend/internal/pkg/env"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	// 🔴 第〇步：加载 .env 文件到进程环境变量
+	// godotenv 将 .env 中的 KEY=VALUE 注入到 os.Environ()，
+	// 之后 Viper 的 AutomaticEnv() 和 env.ValidateSecrets() 都能读取到
+	if err := godotenv.Load(); err != nil {
+		// .env 文件不存在时不报错，兼容 Docker/K8s 直接注入环境变量的场景
+		log.Println("⚠️  未找到 .env 文件，将使用系统环境变量或 YAML 配置中的值")
+	}
+
 	// 🔴 第一步：环境变量门禁校验（敏感信息零硬编码）
 	// 在加载任何配置之前，先检查所有密码/密钥是否已通过环境变量注入
 	env.ValidateSecrets()

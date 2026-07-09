@@ -3,20 +3,61 @@ backend/configs/dev.yaml
 backend/configs/prod.yaml
 backend/configs/test.yaml
 backend/configs/docker.yaml
+backend/.env
+backend/.env.*
+backend/敏感信息.txt
+backend/账密.txt
 
 # 编译产物
 *.exe
-backend/test/test.exe
+*.dll
+*.so
+*.dylib
+*.exe~
+backend/bin/
+backend/dist/
+backend/build/
+backend/server.exe
+backend/test/
+
+# 测试文件（违反仓库净化铁律）
+*_test.go
+*_test.py
+*_test.js
+*_test.ts
+test/
+tests/
+spec/
+specs/
 
 # 提交辅助脚本
 git-safe-push.sh
 敏感信息.txt
+*.log
+logs/
 
 # IDE 和临时文件
 .idea/
 .vscode/
 *.swp
 *.tmp
+*.temp
+Thumbs.db
 
-# 文档（docs 目录）
-backend/docs/
+# 临时生成文件（Swagger等）
+backend/docs/swagger.json
+backend/docs/swagger.yaml
+backend/docs/*.tmp
+backend/docs/*.log
+
+# 依赖包
+vendor/
+node_modules/
+.pnpm-store/
+
+# 环境变量文件
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+frontend/.env
