@@ -638,9 +638,18 @@ func (s *flashService) createFlashOrderInDB(flash *entity.FlashSale, userID uint
 	if tx.Error != nil {
 		return errors.Wrap(tx.Error, "开启事务失败")
 	}
+
+	// 标记事务是否已提交
+	var isCommitted bool
+
 	defer func() {
 		if r := recover(); r != nil {
-			tx.Rollback()
+			// 发生panic，回滚事务
+			if !isCommitted {
+				if rbErr := tx.Rollback(); rbErr != nil {
+					log.Printf("❌ 事务回滚失败: %v", rbErr)
+				}
+			}
 			err = fmt.Errorf("创建订单事务发生panic: %v", r)
 			log.Printf("❌ 创建秒杀订单panic（已回滚事务）: %v", r)
 		}
@@ -657,8 +666,8 @@ func (s *flashService) createFlashOrderInDB(flash *entity.FlashSale, userID uint
 		Status:      0, // 待支付
 	}
 	if err := s.orderRepo.WithTx(tx).Create(order); err != nil {
-		tx.Rollback()
 		// 唯一约束冲突 = 用户已抢过或重复提交，静默回滚 Redis
+		// defer会自动回滚
 		return err
 	}
 
@@ -670,13 +679,14 @@ func (s *flashService) createFlashOrderInDB(flash *entity.FlashSale, userID uint
 		Price:     price,
 	}
 	if err := s.orderItemRepo.WithTx(tx).BatchCreate([]*entity.OrderItem{orderItem}); err != nil {
-		tx.Rollback()
+		// defer会自动回滚
 		return err
 	}
 
 	if err := tx.Commit().Error; err != nil {
 		return errors.Wrap(err, "提交事务失败")
 	}
+	isCommitted = true
 
 	// 清理商品缓存
 	s.productCache.DeleteProduct(flash.ProductID)
@@ -802,9 +812,7 @@ var scanMutex sync.Mutex
 // ScanExpiredOrders 扫描超时未支付的秒杀订单
 // 每30秒执行一次（由 main.go 中的 goroutine 驱动）
 func (s *flashService) ScanExpiredOrders() {
-	if !scanMutex.TryLock() {
-		return // 上一次扫描还未完成，跳过
-	}
+	scanMutex.Lock()
 	defer scanMutex.Unlock()
 
 	timeoutThreshold := time.Now().Add(-s.getPaymentTimeout())

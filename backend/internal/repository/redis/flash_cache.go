@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -233,29 +234,74 @@ func deductTrackKey(flashSaleID uint) string {
 //
 //	code=0 成功 | code=1 库存不足 | code=2 已抢过 | code=3 活动未预热
 func (c *flashCache) AtomicDeductStock(flashSaleID uint, userID uint) (int64, int64, error) {
+	return c.RetryAtomicDeductStock(flashSaleID, userID)
+}
+
+// RetryAtomicDeductStock 带重试机制的Redis扣减
+func (c *flashCache) RetryAtomicDeductStock(flashSaleID uint, userID uint) (int64, int64, error) {
 	keys := []string{stockKey(flashSaleID), userSetKey(flashSaleID), deductTrackKey(flashSaleID)}
 	args := []interface{}{userID}
 
-	result, err := atomicDeductScript.Run(c.ctx, c.client, keys, args...).Result()
-	if err != nil {
-		return 0, 0, fmt.Errorf("Lua脚本执行失败: %w", err)
+	// 重试机制：最多重试3次
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		result, err := atomicDeductScript.Run(c.ctx, c.client, keys, args...).Result()
+		if err == nil {
+			// 解析成功
+			vals, ok := result.([]interface{})
+			if !ok || len(vals) != 2 {
+				return 0, 0, fmt.Errorf("Lua脚本返回格式异常: %v", result)
+			}
+			code, ok := vals[0].(int64)
+			if !ok {
+				return 0, 0, fmt.Errorf("Lua脚本code类型断言失败: got %T", vals[0])
+			}
+			remaining, ok := vals[1].(int64)
+			if !ok {
+				return 0, 0, fmt.Errorf("Lua脚本remaining类型断言失败: got %T", vals[1])
+			}
+			return code, remaining, nil
+		}
+
+		lastErr = err
+		// 如果是连接错误，等待后重试
+		if i < 2 && isRedisConnectionError(err) {
+			time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
+			continue
+		}
+		break
 	}
 
-	// Lua返回的是 []interface{}
-	vals, ok := result.([]interface{})
-	if !ok || len(vals) != 2 {
-		return 0, 0, fmt.Errorf("Lua脚本返回格式异常: %v", result)
+	// 重试失败，检查是否是Redis故障
+	if isRedisConnectionError(lastErr) {
+		// Redis故障，降级到本地模式
+		log.Printf("⚠️ Redis连接失败，降级到本地模式: %v", lastErr)
+		return c.localDeductStock(flashSaleID, userID)
 	}
 
-	code, ok := vals[0].(int64)
-	if !ok {
-		return 0, 0, fmt.Errorf("Lua脚本code类型断言失败: got %T", vals[0])
+	return 0, 0, fmt.Errorf("Redis操作失败: %w", lastErr)
+}
+
+// localDeductStock Redis故障时的本地降级处理
+func (c *flashCache) localDeductStock(flashSaleID uint, userID uint) (int64, int64, error) {
+	// 记录日志，等待运维处理
+	log.Printf("🚨 本地降级处理 - 需要人工干预: flashSaleID=%d userID=%d", flashSaleID, userID)
+
+	// 返回特殊错误码，表示需要降级处理
+	return -1, -1, fmt.Errorf("Redis故障，需要降级处理")
+}
+
+// isRedisConnectionError 判断是否是Redis连接错误
+func isRedisConnectionError(err error) bool {
+	if err == nil {
+		return false
 	}
-	remaining, ok := vals[1].(int64)
-	if !ok {
-		return 0, 0, fmt.Errorf("Lua脚本remaining类型断言失败: got %T", vals[1])
-	}
-	return code, remaining, nil
+	errStr := err.Error()
+	// 常见的Redis连接错误
+	return strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "dial timeout")
 }
 
 // RollbackDeduct 回滚扣减：恢复库存 + 移除用户资格

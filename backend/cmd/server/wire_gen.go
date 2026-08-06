@@ -79,6 +79,6 @@ func InitApp() (*router.Router, error) {
 	flashService := flash.NewFlashService(db, appConfig, flashRepository, flashCache, orderRepository, orderItemRepository, productRepository, productCache)
 	flashController := flash2.NewFlashController(flashService)
 	adminFlashController := flash2.NewAdminFlashController(flashService)
-	routerRouter := router.NewRouter(appConfig, jwtUtil, userController, productController, cartController, orderController, categoryController, adminController, flashController, adminFlashController, productService, categoryService, flashService, blacklist)
+	routerRouter := router.NewRouter(appConfig, jwtUtil, userController, productController, cartController, orderController, categoryController, adminController, flashController, adminFlashController, productService, categoryService, flashService, blacklist, db, client)
 	return routerRouter, nil
 }

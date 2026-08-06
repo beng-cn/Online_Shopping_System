@@ -67,9 +67,18 @@ func (inv *Inventory) SetSoldOut(flashSaleID uint) {
 }
 
 // ResetSoldOut 重置售罄标记（超时释放或库存回补时调用）
-// 直接删除整个 entry，让后续请求走 Redis 判断（避免本地计数器与 Redis 不同步）
+// 使用原子标记方式重置，避免删除过程中有并发读取
 func (inv *Inventory) ResetSoldOut(flashSaleID uint) {
-	inv.data.Delete(flashSaleID)
+	inv.data.Range(func(key, value interface{}) bool {
+		if key.(uint) == flashSaleID {
+			entry := value.(*inventoryEntry)
+			// 原子重置为未售罄状态
+			entry.remaining.Store(int32(0))
+			entry.soldOut.Store(false)
+			return false // 停止遍历
+		}
+		return true
+	})
 }
 
 // Increment 增加本地库存计数（库存回补时调用）

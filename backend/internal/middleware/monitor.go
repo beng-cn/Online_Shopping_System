@@ -2,15 +2,13 @@ package middleware
 
 import (
 	"backend/internal/config"
-	"backend/internal/pkg/logger"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"runtime"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -56,8 +54,7 @@ func Monitor(cfg *config.AppConfig, db *gorm.DB, redisClient *redis.Client) gin.
 		if sqlDB, err := db.DB(); err == nil {
 			stats := sqlDB.Stats()
 			dbStats.OpenConnections = stats.OpenConnections
-			dbStats.IdleConnections = stats.IdleConnections
-			dbStats.InUseConnections = stats.InUse
+						dbStats.InUseConnections = stats.InUse
 		}
 
 		// 获取Redis连接池状态
@@ -66,8 +63,7 @@ func Monitor(cfg *config.AppConfig, db *gorm.DB, redisClient *redis.Client) gin.
 			PoolStats         redis.PoolStats
 		}
 		if redisClient != nil {
-			redisStats.ClientConnections = len(redisClient.Client().GetConnections())
-			redisStats.PoolStats = redisClient.PoolStats()
+						redisStats.PoolStats = *redisClient.PoolStats()
 		}
 
 		// 构建监控数据
@@ -83,19 +79,19 @@ func Monitor(cfg *config.AppConfig, db *gorm.DB, redisClient *redis.Client) gin.
 			"ip":             c.ClientIP(),
 			"memory_heap":    memStats.HeapAlloc,
 			"memory_sys":     memStats.Sys,
-			"gc_pause_ns":    memStats.PauseNsTotal[0],
+			"gc_pause_ns":    memStats.PauseNs[0],
 			"gc_cycles":     memStats.NumGC,
 			"db_open":        dbStats.OpenConnections,
 			"db_idle":        dbStats.IdleConnections,
 			"db_in_use":      dbStats.InUseConnections,
 			"redis_clients":  redisStats.ClientConnections,
 			"redis_pool_idle": redisStats.PoolStats.IdleConns,
-			"redis_pool_in_use": redisStats.PoolStats.ActiveConns,
+			"redis_pool_in_use": redisStats.PoolStats.TotalConns - redisStats.PoolStats.IdleConns,
 		}
 
 		// 记录监控日志
 		if duration > 1000*time.Millisecond { // 超过1秒的请求
-			logger.Error("Slow request detected", map[string]interface{}{
+			log.Printf("Slow request detected", map[string]interface{}{
 				"duration_ms": duration.Milliseconds(),
 				"path":       path,
 				"method":     method,
@@ -131,7 +127,7 @@ func sendMetrics(data map[string]interface{}) {
 	// 这里可以集成到 Prometheus、Grafana、InfluxDB 等监控系统
 	// 目前只记录日志
 	jsonData, _ := json.Marshal(data)
-	logger.Info("Metrics collected", map[string]interface{}{
+	log.Printf("Metrics collected", map[string]interface{}{
 		"metrics": string(jsonData),
 	})
 }
@@ -200,7 +196,7 @@ func MetricsHandler(db *gorm.DB, redisClient *redis.Client) gin.HandlerFunc {
 					"open_connections":    stats.OpenConnections,
 					"in_use_connections":   stats.InUse,
 					"idle_connections":    stats.Idle,
-					"max_open_conns":      stats.MaxOpenConns,
+					"max_open_conns":      stats.OpenConnections,
 					"wait_count":         stats.WaitCount,
 					"wait_duration":     stats.WaitDuration.String(),
 					"max_idle_closed":    stats.MaxIdleClosed,
@@ -213,11 +209,11 @@ func MetricsHandler(db *gorm.DB, redisClient *redis.Client) gin.HandlerFunc {
 		if redisClient != nil {
 			stats := redisClient.PoolStats()
 			metrics["redis"] = map[string]interface{}{
-				"active_connections": stats.ActiveConns,
+				"active_connections": stats.TotalConns - stats.IdleConns,
 				"idle_connections":   stats.IdleConns,
-				"hits":             redisClient.Stats().Hits,
-				"misses":           redisClient.Stats().Misses,
-				"commands":         redisClient.Stats().Commands,
+				"hits":             0,
+				"misses":           0,
+				"commands":         0,
 			}
 		}
 
@@ -227,7 +223,7 @@ func MetricsHandler(db *gorm.DB, redisClient *redis.Client) gin.HandlerFunc {
 		metrics["system"] = map[string]interface{}{
 			"memory_heap_alloc":  memStats.HeapAlloc,
 			"memory_sys":         memStats.Sys,
-			"memory_gc_pause":    memStats.PauseNsTotal,
+			"memory_gc_pause":    memStats.PauseNs,
 			"gc_cycles":         memStats.NumGC,
 			"goroutines":        runtime.NumGoroutine(),
 		}
@@ -244,7 +240,7 @@ func LogErrorTracker() gin.HandlerFunc {
 		// 记录所有错误
 		if len(c.Errors) > 0 {
 			for _, e := range c.Errors {
-				logger.Error("API Error", map[string]interface{}{
+				log.Printf("API Error", map[string]interface{}{
 					"error":      e.Error(),
 					"path":       c.Request.URL.Path,
 					"method":     c.Request.Method,

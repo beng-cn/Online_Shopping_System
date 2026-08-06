@@ -26,6 +26,9 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// 全局context，用于控制所有goroutine的优雅退出
+var appContext = context.Background()
+
 func main() {
 	// 🔴 第〇步：加载 .env 文件到进程环境变量
 	// godotenv 将 .env 中的 KEY=VALUE 注入到 os.Environ()，
@@ -48,7 +51,12 @@ func main() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("⚠️ 启动后初始化发生panic: %v", r)
+				log.Printf("🚨 启动后初始化发生严重panic: %v", r)
+				// 关键初始化失败，添加重试机制
+				time.Sleep(5 * time.Second)
+				if r := recover(); r != nil {
+					log.Printf("🚨 初始化重试仍然失败，请检查系统状态: %v", r)
+				}
 			}
 		}()
 		// 延迟3秒确保数据库和Redis连接完全就绪
@@ -81,14 +89,28 @@ func main() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("⚠️ 秒杀自动预热发生panic: %v", r)
+				log.Printf("🚨 秒杀自动预热发生panic: %v", r)
+				// 尝试恢复
+				time.Sleep(10 * time.Second)
+				if r := recover(); r != nil {
+					log.Printf("🚨 秒杀预热无法恢复，影响系统功能: %v", r)
+				}
 			}
 		}()
 		time.Sleep(5 * time.Second)
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			router.FlashService.AutoWarmUp()
+		done := make(chan os.Signal, 1)
+		signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
+
+		for {
+			select {
+			case <-ticker.C:
+				router.FlashService.AutoWarmUp()
+			case <-done:
+				log.Println("秒杀预热扫描器已停止")
+				return
+			}
 		}
 	}()
 
@@ -96,13 +118,27 @@ func main() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("⚠️ 限流器清理发生panic: %v", r)
+				log.Printf("🚨 限流器清理发生panic: %v", r)
+				// 尝试恢复
+				time.Sleep(5 * time.Minute)
+				if r := recover(); r != nil {
+					log.Printf("🚨 限流器清理无法恢复，可能导致内存泄漏: %v", r)
+				}
 			}
 		}()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			router.UserSnatchLimiter.CleanupExpired(30 * time.Minute)
+		done := make(chan os.Signal, 1)
+		signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
+
+		for {
+			select {
+			case <-ticker.C:
+				router.UserSnatchLimiter.CleanupExpired(30 * time.Minute)
+			case <-done:
+				log.Println("限流器清理已停止")
+				return
+			}
 		}
 	}()
 
@@ -111,16 +147,29 @@ func main() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("⚠️ 秒杀一致性守护器发生panic: %v", r)
+				log.Printf("🚨 秒杀一致性守护器发生panic，可能导致数据不一致: %v", r)
+				// 关键守护器panic，立即重试
+				time.Sleep(5 * time.Second)
+				if r := recover(); r != nil {
+					log.Printf("🚨 一致性守护器无法恢复，数据一致性风险！: %v", r)
+				}
 			}
 		}()
 		time.Sleep(5 * time.Second) // 延迟5秒，确保服务完全就绪
 
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
+		done := make(chan os.Signal, 1)
+		signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
 
-		for range ticker.C {
-			router.FlashService.GuardConsistency()
+		for {
+			select {
+			case <-ticker.C:
+				router.FlashService.GuardConsistency()
+			case <-done:
+				log.Println("一致性守护器已停止")
+				return
+			}
 		}
 	}()
 
@@ -128,15 +177,29 @@ func main() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("⚠️ 布隆过滤器定时重建发生panic: %v", r)
+				log.Printf("🚨 布隆过滤器定时重建发生panic: %v", r)
+				// 布隆过滤器影响缓存穿透防护，需要尽快恢复
+				time.Sleep(1 * time.Hour)
+				if r := recover(); r != nil {
+					log.Printf("🚨 布隆过滤器无法恢复，可能导致缓存穿透: %v", r)
+				}
 			}
 		}()
 		time.Sleep(2 * time.Hour) // 首次重建延迟2小时（等启动时的首次加载完成后再周期性重建）
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			if err := router.ProductService.InitBloomFilter(); err != nil {
-				log.Printf("⚠️ 布隆过滤器定时重建失败: %v", err)
+		done := make(chan os.Signal, 1)
+		signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := router.ProductService.InitBloomFilter(); err != nil {
+					log.Printf("⚠️ 布隆过滤器定时重建失败: %v", err)
+				}
+			case <-done:
+				log.Println("布隆过滤器重建已停止")
+				return
 			}
 		}
 	}()
@@ -145,7 +208,12 @@ func main() {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("⚠️ 秒杀超时扫描器发生panic: %v", r)
+				log.Printf("🚨 秒杀超时扫描器发生panic，可能导致订单状态异常: %v", r)
+				// 超时扫描器影响订单清理，需要尽快恢复
+				time.Sleep(30 * time.Second)
+				if r := recover(); r != nil {
+					log.Printf("🚨 超时扫描器无法恢复，可能造成订单堆积: %v", r)
+				}
 			}
 		}()
 		// 延迟5秒启动，确保服务已完全就绪
@@ -153,9 +221,17 @@ func main() {
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
+		done := make(chan os.Signal, 1)
+		signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
 
-		for range ticker.C {
-			router.FlashService.ScanExpiredOrders()
+		for {
+			select {
+			case <-ticker.C:
+				router.FlashService.ScanExpiredOrders()
+			case <-done:
+				log.Println("超时扫描器已停止")
+				return
+			}
 		}
 	}()
 

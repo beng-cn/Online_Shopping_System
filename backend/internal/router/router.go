@@ -21,8 +21,10 @@ import (
 	"runtime/debug"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"gorm.io/gorm"
 
 	_ "backend/docs" // Swagger 生成的接口文档
 )
@@ -44,6 +46,8 @@ type Router struct {
 	FlashService         flash.FlashService
 	UserSnatchLimiter    *flashlimiter.UserRateLimiter
 	TokenBlacklist       jwt.TokenBlacklist
+	DB                   *gorm.DB       // 数据库连接（供健康检查和指标接口使用）
+	RedisClient          *redis.Client  // Redis连接（供健康检查和指标接口使用）
 }
 
 func NewRouter(
@@ -61,6 +65,8 @@ func NewRouter(
 	categoryService category.CategoryService,
 	flashService flash.FlashService,
 	blacklist jwt.TokenBlacklist,
+	db *gorm.DB,
+	redisClient *redis.Client,
 ) *Router {
 	snatchLimiter := flashlimiter.NewUserRateLimiter(1, 1)
 	flashService.SetUserLimiter(snatchLimiter)
@@ -81,6 +87,8 @@ func NewRouter(
 		FlashService:         flashService,
 		UserSnatchLimiter:    snatchLimiter,
 		TokenBlacklist:       blacklist,
+			DB:                   db,
+			RedisClient:          redisClient,
 	}
 }
 
@@ -95,15 +103,15 @@ func (r *Router) Setup() *gin.Engine {
 	engine.Use(CustomRecovery())
 
 	// 添加监控中间件（在请求处理之前）
-	engine.Use(middleware.Monitor(r.Config, nil, nil))
+	engine.Use(middleware.Monitor(r.Config, r.DB, r.RedisClient))
 
 	limiter := middleware.NewRateLimiter(200, 300)
 	engine.Use(limiter.Handler())
 
 	// 健康检查和监控接口
-	engine.GET("/health", middleware.HealthCheck(r.Config, nil, nil))
-	engine.GET("/api/v1/admin/health", middleware.HealthCheck(r.Config, nil, nil))
-	engine.GET("/api/v1/admin/metrics", middleware.MetricsHandler(nil, nil))
+	engine.GET("/health", middleware.HealthCheck(r.Config, r.DB, r.RedisClient))
+	engine.GET("/api/v1/admin/health", middleware.HealthCheck(r.Config, r.DB, r.RedisClient))
+	engine.GET("/api/v1/admin/metrics", middleware.MetricsHandler(r.DB, r.RedisClient))
 
 	// 添加错误跟踪中间件（在管理员路由中）
 	adminGroup := engine.Group("/api/v1/admin")

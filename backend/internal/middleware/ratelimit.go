@@ -1,8 +1,10 @@
 package middleware
 
 import (
+	"context"
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/response"
+	"log"
 	"sync"
 	"time"
 
@@ -33,7 +35,7 @@ func NewRateLimiter(rate, burst int) *RateLimiter {
 		cleanup:  5 * time.Minute,
 	}
 	// 后台定时清理过期访客记录，防止内存泄漏
-	go rl.cleanupLoop()
+	go rl.cleanupLoop(context.Background())
 	return rl
 }
 
@@ -87,18 +89,24 @@ func (rl *RateLimiter) allow(ip string) bool {
 }
 
 // cleanupLoop 定时清理长时间未访问的访客记录
-func (rl *RateLimiter) cleanupLoop() {
+func (rl *RateLimiter) cleanupLoop(ctx context.Context) {
 	ticker := time.NewTicker(rl.cleanup)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		rl.mu.Lock()
-		cutoff := time.Now().Add(-rl.cleanup)
-		for ip, v := range rl.visitors {
-			if v.lastSeen.Before(cutoff) {
-				delete(rl.visitors, ip)
+	for {
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			cutoff := time.Now().Add(-rl.cleanup)
+			for ip, v := range rl.visitors {
+				if v.lastSeen.Before(cutoff) {
+					delete(rl.visitors, ip)
+				}
 			}
+			rl.mu.Unlock()
+		case <-ctx.Done():
+			log.Println("RateLimiter cleanupLoop 已停止")
+			return
 		}
-		rl.mu.Unlock()
 	}
 }
