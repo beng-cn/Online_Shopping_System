@@ -14,7 +14,7 @@ type CreateFlashSaleRequest struct {
 type UpdateFlashSaleRequest struct {
 	FlashPrice float64 `json:"flash_price" binding:"omitempty,gt=0" msg:"秒杀价格必须大于0"`
 	FlashStock int     `json:"flash_stock" binding:"omitempty,min=1" msg:"秒杀库存至少为1"`
-	QueueCap   int     `json:"queue_cap" binding:"omitempty,min=0" msg:"排队上限不能为负数"`
+	QueueCap   *int    `json:"queue_cap" binding:"omitempty,min=0" msg:"排队上限不能为负数"` // 指针类型：不传=保持原值，传 0=改回自动计算
 	StartTime  string  `json:"start_time"`
 	EndTime    string  `json:"end_time"`
 	Status     *int    `json:"status" binding:"omitempty,oneof=0 1 2 3" msg:"状态值无效"` // 指针类型，避免零值问题

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"time"
 
 	"backend/internal/model/dto/request"
@@ -62,15 +63,20 @@ func NewOrderService(
 }
 
 // CreateOrder 从购物车创建订单，含库存乐观锁扣减和事务保护
-func (s *orderService) CreateOrder(ctx context.Context, userID uint, req *request.CreateOrderRequest) (*response.OrderResponse, error) {
+func (s *orderService) CreateOrder(ctx context.Context, userID uint, req *request.CreateOrderRequest) (resp *response.OrderResponse, err error) {
 	// 开启事务
 	tx := s.db.WithContext(ctxutil.Or(ctx)).Begin()
 	if tx.Error != nil {
 		return nil, errors.Wrap(tx.Error, "开启事务失败")
 	}
+	// 命名返回值 + defer 里显式赋值：若只 recover 不赋值，函数会以零值 (nil, nil) 返回，
+	// Controller 会误判为"下单成功但无数据"，前端拿到 code=0 却是空 body
 	defer func() {
 		if r := recover(); r != nil {
 			tx.Rollback()
+			log.Printf("❌ 创建订单发生 panic，事务已回滚: %v", r)
+			resp = nil
+			err = errors.New(errors.CodeServerError, "订单创建异常，请稍后重试")
 		}
 	}()
 
@@ -379,6 +385,11 @@ func (s *orderService) DeleteOrder(ctx context.Context, orderID uint, userID uin
 	}
 	if order.UserID != userID {
 		return errors.New(errors.CodeForbidden, "无权删除他人的订单")
+	}
+
+	// 仅待支付订单可删除：已支付订单删掉会造成"订单没了但库存和销量已扣"的脏数据
+	if order.Status != 0 {
+		return errors.New(errors.CodeParamError, "仅待支付订单可删除")
 	}
 
 	// 开启事务

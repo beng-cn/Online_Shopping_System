@@ -120,7 +120,10 @@ func (s *productService) UpdateProduct(ctx context.Context, id uint, req *reques
 		product.Keywords = req.Keywords
 	}
 	product.Price = req.Price
-	product.Stock = req.Stock
+	// 库存用指针区分"未传"与"显式传 0"：未传保持原值，传 0 表示清空库存
+	if req.Stock != nil {
+		product.Stock = *req.Stock
+	}
 	product.Image = req.Image
 	product.Status = req.Status
 

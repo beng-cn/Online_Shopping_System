@@ -68,6 +68,47 @@ type flashService struct {
 	productCache  redis.ProductCache
 	inventory     *flashinventory.Inventory
 	userLimiter   flashlimiter.UserLimiter // per-user 内存限流器
+
+	// 对账日志节流：避免 5 秒一次的一致性巡检把日志刷爆
+	reconcileWarnMu sync.Mutex
+	reconcileWarnAt map[uint]time.Time // 每个活动上次"未预热"告警时间
+	lastSummaryAt   time.Time          // 上次汇总日志时间
+}
+
+// reconcileLogInterval 对账相关日志的节流窗口：同一活动/汇总日志在该窗口内不重复打印
+const reconcileLogInterval = 10 * time.Minute
+
+// warnUnwarmed 对"Redis 库存 Key 不存在且 DB 无订单"的活动告警，
+// 同一活动在节流窗口内只提示一次：未预热的活动每轮都会被扫描到，
+// 若不做节流，10 个活动每 5 秒就会刷 10 行日志
+func (s *flashService) warnUnwarmed(flashSaleID uint) {
+	s.reconcileWarnMu.Lock()
+	if s.reconcileWarnAt == nil {
+		s.reconcileWarnAt = make(map[uint]time.Time)
+	}
+	if last, ok := s.reconcileWarnAt[flashSaleID]; ok && time.Since(last) < reconcileLogInterval {
+		s.reconcileWarnMu.Unlock()
+		return
+	}
+	s.reconcileWarnAt[flashSaleID] = time.Now()
+	s.reconcileWarnMu.Unlock()
+
+	log.Printf("⚠️ 活动%d: Redis库存Key不存在且DB无订单，跳过对账（活动可能从未预热或Redis数据丢失；同一活动10分钟内只提示一次）", flashSaleID)
+}
+
+// logReconcileSummary 打印对账汇总日志，节流窗口内只打印一次。
+// 正常活动不再逐条打印，异常活动仍逐条告警，兼顾可观测性与日志量。
+func (s *flashService) logReconcileSummary(checked, okCount, skipped, anomalies int) {
+	s.reconcileWarnMu.Lock()
+	now := time.Now()
+	if !s.lastSummaryAt.IsZero() && now.Sub(s.lastSummaryAt) < reconcileLogInterval {
+		s.reconcileWarnMu.Unlock()
+		return
+	}
+	s.lastSummaryAt = now
+	s.reconcileWarnMu.Unlock()
+
+	log.Printf("🧮 对账汇总（10分钟一次）: 抽查%d个活动，一致%d，跳过%d，异常%d", checked, okCount, skipped, anomalies)
 }
 
 // NewFlashService 创建秒杀服务实例（供 Wire 注入）
@@ -179,8 +220,9 @@ func (s *flashService) UpdateFlashSale(ctx context.Context, id uint, req *reques
 		flash.FlashStock = req.FlashStock
 		stockChanged = true
 	}
-	if req.QueueCap >= 0 {
-		flash.QueueCap = req.QueueCap
+	// 排队上限：哨兵指针区分"不修改"与"改为 0（自动计算）"
+	if req.QueueCap != nil {
+		flash.QueueCap = *req.QueueCap
 	}
 	if req.StartTime != "" {
 		t, err := time.ParseInLocation("2006-01-02 15:04:05", req.StartTime, time.Local)
@@ -951,8 +993,8 @@ func (s *flashService) healSoldOutFlag(ctx context.Context) {
 // RecoverPendingOrders 崩溃恢复：扫描防丢失记录和已购追踪列表，补建丢失订单
 // 在 main.go 启动时调用
 func (s *flashService) RecoverPendingOrders(ctx context.Context) {
-	log.Println("🔍 开始扫描秒杀防丢失记录...")
-
+	// 注意：这里不打印"开始扫描"日志——本方法每 5 秒被一致性守护调用一次，
+	// 无事可做时保持静默，只有真的发现待恢复记录时才输出（见下方日志）
 	keys, err := s.flashCache.ScanAllPendingKeys()
 	if err != nil {
 		log.Printf("⚠️ 扫描防丢失记录失败: %v", err)
@@ -1088,7 +1130,9 @@ func (s *flashService) ReconcileStock(ctx context.Context) {
 		return
 	}
 
+	checked, okCount, skipped, anomalies := 0, 0, 0, 0
 	for _, f := range flashes {
+		checked++
 		// Redis 已扣减数 = 原始库存 - Redis 剩余
 		redisRemaining, err := s.flashCache.GetRemainingStock(f.ID)
 		if err != nil {
@@ -1114,12 +1158,14 @@ func (s *flashService) ReconcileStock(ctx context.Context) {
 		if redisRemaining == 0 && dbSold == 0 {
 			exists, existsErr := s.flashCache.StockKeyExists(f.ID)
 			if existsErr == nil && !exists {
-				log.Printf("⚠️ 活动%d: Redis库存Key不存在且DB无订单，跳过对账（活动可能从未预热或Redis数据丢失）", f.ID)
+				skipped++
+				s.warnUnwarmed(f.ID)
 				continue
 			}
 		}
 
 		if redisSold != dbSold {
+			anomalies++
 			deviation := redisSold - dbSold
 			log.Printf("🚨 对账异常！活动%d: Redis已售=%d DB已售=%d 偏差=%d", f.ID, redisSold, dbSold, deviation)
 
@@ -1160,7 +1206,8 @@ func (s *flashService) ReconcileStock(ctx context.Context) {
 				}
 			}
 		} else {
-			log.Printf("✅ 对账通过 活动%d: 已售=%d", f.ID, redisSold)
+			okCount++
 		}
 	}
+	s.logReconcileSummary(checked, okCount, skipped, anomalies)
 }

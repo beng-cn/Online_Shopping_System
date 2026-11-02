@@ -47,47 +47,44 @@ func Monitor(cfg *config.AppConfig, db *gorm.DB, redisClient *redis.Client) gin.
 
 		// 获取数据库连接池状态
 		var dbStats struct {
-			OpenConnections int
-			IdleConnections int
+			OpenConnections  int
+			IdleConnections  int
 			InUseConnections int
 		}
 		if sqlDB, err := db.DB(); err == nil {
 			stats := sqlDB.Stats()
 			dbStats.OpenConnections = stats.OpenConnections
 			dbStats.IdleConnections = stats.Idle
-						dbStats.InUseConnections = stats.InUse
+			dbStats.InUseConnections = stats.InUse
 		}
 
 		// 获取Redis连接池状态
-		var redisStats struct {
-			ClientConnections int
-			PoolStats         redis.PoolStats
-		}
+		var redisStats redis.PoolStats
 		if redisClient != nil {
-						redisStats.PoolStats = *redisClient.PoolStats()
+			redisStats = *redisClient.PoolStats()
 		}
 
 		// 构建监控数据
 		monitorData := map[string]interface{}{
-			"timestamp":        time.Now().Format(time.RFC3339),
-			"method":          method,
-			"path":            path,
-			"status":          w.statusCode,
-			"duration_ms":     duration.Milliseconds(),
-			"request_size":    requestBodySize,
-			"response_size":   w.size,
-			"user_agent":      c.Request.UserAgent(),
-			"ip":             c.ClientIP(),
-			"memory_heap":    memStats.HeapAlloc,
-			"memory_sys":     memStats.Sys,
-			"gc_pause_ns":    memStats.PauseNs[0],
-			"gc_cycles":     memStats.NumGC,
-			"db_open":        dbStats.OpenConnections,
-			"db_idle":        dbStats.IdleConnections,
-			"db_in_use":      dbStats.InUseConnections,
-			"redis_clients":  redisStats.ClientConnections,
-			"redis_pool_idle": redisStats.PoolStats.IdleConns,
-			"redis_pool_in_use": redisStats.PoolStats.TotalConns - redisStats.PoolStats.IdleConns,
+			"timestamp":         time.Now().Format(time.RFC3339),
+			"method":            method,
+			"path":              path,
+			"status":            w.statusCode,
+			"duration_ms":       duration.Milliseconds(),
+			"request_size":      requestBodySize,
+			"response_size":     w.size,
+			"user_agent":        c.Request.UserAgent(),
+			"ip":                c.ClientIP(),
+			"memory_heap":       memStats.HeapAlloc,
+			"memory_sys":        memStats.Sys,
+			"gc_pause_ns":       memStats.PauseNs[0],
+			"gc_cycles":         memStats.NumGC,
+			"db_open":           dbStats.OpenConnections,
+			"db_idle":           dbStats.IdleConnections,
+			"db_in_use":         dbStats.InUseConnections,
+			"redis_clients":     redisStats.TotalConns,
+			"redis_pool_idle":   redisStats.IdleConns,
+			"redis_pool_in_use": redisStats.TotalConns - redisStats.IdleConns,
 		}
 
 		// 记录监控日志
@@ -134,7 +131,7 @@ func HealthCheck(cfg *config.AppConfig, db *gorm.DB, redisClient *redis.Client) 
 			"status":    "ok",
 			"timestamp": time.Now().Format(time.RFC3339),
 			"version":   "1.0.0",
-			"checks": map[string]interface{}{},
+			"checks":    map[string]interface{}{},
 		}
 
 		// 检查数据库连接
@@ -189,12 +186,12 @@ func MetricsHandler(db *gorm.DB, redisClient *redis.Client) gin.HandlerFunc {
 				stats := sqlDB.Stats()
 				metrics["database"] = map[string]interface{}{
 					"open_connections":    stats.OpenConnections,
-					"in_use_connections":   stats.InUse,
+					"in_use_connections":  stats.InUse,
 					"idle_connections":    stats.Idle,
-					"max_open_conns":      stats.OpenConnections,
-					"wait_count":         stats.WaitCount,
-					"wait_duration":     stats.WaitDuration.String(),
-					"max_idle_closed":    stats.MaxIdleClosed,
+					"max_open_conns":      stats.MaxOpenConnections,
+					"wait_count":          stats.WaitCount,
+					"wait_duration":       stats.WaitDuration.String(),
+					"max_idle_closed":     stats.MaxIdleClosed,
 					"max_lifetime_closed": stats.MaxLifetimeClosed,
 				}
 			}
@@ -206,9 +203,9 @@ func MetricsHandler(db *gorm.DB, redisClient *redis.Client) gin.HandlerFunc {
 			metrics["redis"] = map[string]interface{}{
 				"active_connections": stats.TotalConns - stats.IdleConns,
 				"idle_connections":   stats.IdleConns,
-				"hits":             0,
-				"misses":           0,
-				"commands":         0,
+				"hits":               0,
+				"misses":             0,
+				"commands":           0,
 			}
 		}
 
@@ -216,9 +213,9 @@ func MetricsHandler(db *gorm.DB, redisClient *redis.Client) gin.HandlerFunc {
 		var memStats runtime.MemStats
 		runtime.ReadMemStats(&memStats)
 		metrics["system"] = map[string]interface{}{
-			"memory_heap_alloc":  memStats.HeapAlloc,
-			"memory_sys":         memStats.Sys,
-			"memory_gc_pause":    memStats.PauseNs,
+			"memory_heap_alloc": memStats.HeapAlloc,
+			"memory_sys":        memStats.Sys,
+			"memory_gc_pause":   memStats.PauseNs,
 			"gc_cycles":         memStats.NumGC,
 			"goroutines":        runtime.NumGoroutine(),
 		}
