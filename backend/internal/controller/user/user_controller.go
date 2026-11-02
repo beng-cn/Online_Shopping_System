@@ -1,11 +1,12 @@
 package user
 
 import (
+	"strconv"
+
 	"backend/internal/model/dto/request"
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/response"
 	"backend/internal/service/user"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -35,7 +36,7 @@ func (c *UserController) Register(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.userService.Register(&req); err != nil {
+	if err := c.userService.Register(ctx.Request.Context(), &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -59,7 +60,7 @@ func (c *UserController) Login(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := c.userService.Login(&req)
+	resp, err := c.userService.Login(ctx.Request.Context(), &req)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -84,7 +85,7 @@ func (c *UserController) ForgotPassword(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.userService.ResetPasswordByPhone(&req); err != nil {
+	if err := c.userService.ResetPasswordByPhone(ctx.Request.Context(), &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -110,7 +111,7 @@ func (c *UserController) UpdateUserInfo(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	if err := c.userService.UpdateUserInfo(userID, &req); err != nil {
+	if err := c.userService.UpdateUserInfo(ctx.Request.Context(), userID, &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -130,7 +131,7 @@ func (c *UserController) UpdateUserInfo(ctx *gin.Context) {
 func (c *UserController) GetUserInfo(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
 
-	resp, err := c.userService.GetUserInfo(userID)
+	resp, err := c.userService.GetUserInfo(ctx.Request.Context(), userID)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -156,7 +157,7 @@ func (c *UserController) ListUsers(ctx *gin.Context) {
 	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("page_size", "10"))
 	keyword := ctx.Query("keyword")
 
-	resp, err := c.userService.ListUsers(pageNum, pageSize, keyword)
+	resp, err := c.userService.ListUsers(ctx.Request.Context(), pageNum, pageSize, keyword)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -188,7 +189,7 @@ func (c *UserController) UpdateUserStatus(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.userService.UpdateUserStatus(uint(id), *req.Status); err != nil {
+	if err := c.userService.UpdateUserStatus(ctx.Request.Context(), uint(id), *req.Status); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -213,7 +214,7 @@ func (c *UserController) DeleteUser(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.userService.DeleteUser(uint(id)); err != nil {
+	if err := c.userService.DeleteUser(ctx.Request.Context(), uint(id)); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -245,7 +246,7 @@ func (c *UserController) ResetUserPassword(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.userService.ResetUserPassword(uint(id), &req); err != nil {
+	if err := c.userService.ResetUserPassword(ctx.Request.Context(), uint(id), &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -271,7 +272,7 @@ func (c *UserController) VerifyAdminPin(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	if err := c.userService.VerifyAdminPin(userID, &req); err != nil {
+	if err := c.userService.VerifyAdminPin(ctx.Request.Context(), userID, &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -297,7 +298,7 @@ func (c *UserController) SetAdminPin(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	if err := c.userService.SetAdminPin(userID, &req); err != nil {
+	if err := c.userService.SetAdminPin(ctx.Request.Context(), userID, &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}

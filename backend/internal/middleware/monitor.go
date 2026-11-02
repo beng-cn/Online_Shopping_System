@@ -54,6 +54,7 @@ func Monitor(cfg *config.AppConfig, db *gorm.DB, redisClient *redis.Client) gin.
 		if sqlDB, err := db.DB(); err == nil {
 			stats := sqlDB.Stats()
 			dbStats.OpenConnections = stats.OpenConnections
+			dbStats.IdleConnections = stats.Idle
 						dbStats.InUseConnections = stats.InUse
 		}
 
@@ -91,12 +92,8 @@ func Monitor(cfg *config.AppConfig, db *gorm.DB, redisClient *redis.Client) gin.
 
 		// 记录监控日志
 		if duration > 1000*time.Millisecond { // 超过1秒的请求
-			log.Printf("Slow request detected", map[string]interface{}{
-				"duration_ms": duration.Milliseconds(),
-				"path":       path,
-				"method":     method,
-				"ip":        c.ClientIP(),
-			})
+			log.Printf("🐢 慢请求: 耗时=%dms 方法=%s 路径=%s IP=%s",
+				duration.Milliseconds(), method, path, c.ClientIP())
 		}
 
 		// 异步发送监控数据到外部系统（如果有）
@@ -127,9 +124,7 @@ func sendMetrics(data map[string]interface{}) {
 	// 这里可以集成到 Prometheus、Grafana、InfluxDB 等监控系统
 	// 目前只记录日志
 	jsonData, _ := json.Marshal(data)
-	log.Printf("Metrics collected", map[string]interface{}{
-		"metrics": string(jsonData),
-	})
+	log.Printf("Metrics collected: %s", jsonData)
 }
 
 // HealthCheck 健康检查处理器
@@ -240,13 +235,8 @@ func LogErrorTracker() gin.HandlerFunc {
 		// 记录所有错误
 		if len(c.Errors) > 0 {
 			for _, e := range c.Errors {
-				log.Printf("API Error", map[string]interface{}{
-					"error":      e.Error(),
-					"path":       c.Request.URL.Path,
-					"method":     c.Request.Method,
-					"ip":        c.ClientIP(),
-					"user_agent": c.Request.UserAgent(),
-				})
+				log.Printf("API Error: 路径=%s 方法=%s IP=%s 错误=%s",
+					c.Request.URL.Path, c.Request.Method, c.ClientIP(), e.Error())
 			}
 		}
 	}

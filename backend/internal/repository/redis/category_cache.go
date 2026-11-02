@@ -1,14 +1,15 @@
 package redis
 
 import (
-	"backend/internal/model/entity"
-	"backend/internal/pkg/errors"
-	"backend/internal/repository/mysql"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"time"
+
+	"backend/internal/model/entity"
+	"backend/internal/pkg/errors"
+	"backend/internal/repository/mysql"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -27,7 +28,7 @@ type CategoryCache interface {
 	GetChildCategories(parentID uint) ([]*entity.Category, error)
 	SetChildCategories(parentID uint, categories []*entity.Category) error
 	ClearAllCategoryCache() error
-	WarmUpAllCategories(categoryRepo mysql.CategoryRepository) error // 新增预热方法
+	WarmUpAllCategories(ctx context.Context, categoryRepo mysql.CategoryRepository) error // 新增预热方法
 }
 
 type categoryCache struct {
@@ -182,11 +183,11 @@ func (c *categoryCache) ClearAllCategoryCache() error {
 }
 
 // WarmUpAllCategories 全部分类缓存预热
-func (c *categoryCache) WarmUpAllCategories(categoryRepo mysql.CategoryRepository) error {
+func (c *categoryCache) WarmUpAllCategories(ctx context.Context, categoryRepo mysql.CategoryRepository) error {
 	log.Println("🚀 开始预热分类缓存...")
 
 	// 预热父分类
-	parentCategories, err := categoryRepo.GetParentCategories()
+	parentCategories, err := categoryRepo.GetParentCategories(ctx)
 	if err != nil {
 		return errors.Wrap(err, "预热父分类缓存查询数据库失败")
 	}
@@ -197,7 +198,7 @@ func (c *categoryCache) WarmUpAllCategories(categoryRepo mysql.CategoryRepositor
 	// 预热所有子分类
 	successCount := 0
 	for _, parent := range parentCategories {
-		childCategories, err := categoryRepo.GetChildCategories(parent.ID)
+		childCategories, err := categoryRepo.GetChildCategories(ctx, parent.ID)
 		if err != nil {
 			log.Printf("⚠️ 查询父分类ID %d 的子分类失败: %v", parent.ID, err)
 			continue

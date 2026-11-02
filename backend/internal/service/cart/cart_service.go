@@ -1,6 +1,8 @@
 package cart
 
 import (
+	"context"
+
 	"backend/internal/model/dto/request"
 	"backend/internal/model/dto/response"
 	"backend/internal/model/entity"
@@ -9,10 +11,10 @@ import (
 )
 
 type CartService interface {
-	AddToCart(userID uint, req *request.AddToCartRequest) error
-	UpdateCartQuantity(userID uint, cartID uint, quantity int) error
-	DeleteCartItem(userID uint, cartID uint) error
-	GetCartList(userID uint) ([]*response.CartResponse, error)
+	AddToCart(ctx context.Context, userID uint, req *request.AddToCartRequest) error
+	UpdateCartQuantity(ctx context.Context, userID uint, cartID uint, quantity int) error
+	DeleteCartItem(ctx context.Context, userID uint, cartID uint) error
+	GetCartList(ctx context.Context, userID uint) ([]*response.CartResponse, error)
 }
 
 type cartService struct {
@@ -32,9 +34,9 @@ func NewCartService(
 }
 
 // AddToCart 添加商品到购物车，已存在则累加数量
-func (s *cartService) AddToCart(userID uint, req *request.AddToCartRequest) error {
+func (s *cartService) AddToCart(ctx context.Context, userID uint, req *request.AddToCartRequest) error {
 	// 校验商品是否存在且上架
-	product, err := s.productRepo.GetByID(req.ProductID)
+	product, err := s.productRepo.GetByID(ctx, req.ProductID)
 	if err != nil {
 		return err
 	}
@@ -49,7 +51,7 @@ func (s *cartService) AddToCart(userID uint, req *request.AddToCartRequest) erro
 	}
 
 	// 检查购物车中是否已有该商品
-	existingCart, err := s.cartRepo.GetByUserAndProduct(userID, req.ProductID)
+	existingCart, err := s.cartRepo.GetByUserAndProduct(ctx, userID, req.ProductID)
 	if err != nil {
 		return err
 	}
@@ -60,7 +62,7 @@ func (s *cartService) AddToCart(userID uint, req *request.AddToCartRequest) erro
 			ProductID: req.ProductID,
 			Quantity:  req.Quantity,
 		}
-		return s.cartRepo.Create(newCart)
+		return s.cartRepo.Create(ctx, newCart)
 	} else {
 		// 更新购物车数量
 		newQuantity := existingCart.Quantity + req.Quantity
@@ -68,14 +70,14 @@ func (s *cartService) AddToCart(userID uint, req *request.AddToCartRequest) erro
 			return errors.Errorf(errors.CodeStockInsufficient, "购物车中该商品已达库存上限，剩余%d件", product.Stock)
 		}
 		existingCart.Quantity = newQuantity
-		return s.cartRepo.Update(existingCart)
+		return s.cartRepo.Update(ctx, existingCart)
 	}
 }
 
 // UpdateCartQuantity 修改购物车商品数量
-func (s *cartService) UpdateCartQuantity(userID uint, cartID uint, quantity int) error {
+func (s *cartService) UpdateCartQuantity(ctx context.Context, userID uint, cartID uint, quantity int) error {
 	// 校验购物车记录是否属于当前用户
-	cart, err := s.cartRepo.GetByID(cartID)
+	cart, err := s.cartRepo.GetByID(ctx, cartID)
 	if err != nil {
 		return err
 	}
@@ -84,7 +86,7 @@ func (s *cartService) UpdateCartQuantity(userID uint, cartID uint, quantity int)
 	}
 
 	// 校验商品库存
-	product, err := s.productRepo.GetByID(cart.ProductID)
+	product, err := s.productRepo.GetByID(ctx, cart.ProductID)
 	if err != nil {
 		return err
 	}
@@ -93,13 +95,13 @@ func (s *cartService) UpdateCartQuantity(userID uint, cartID uint, quantity int)
 	}
 
 	cart.Quantity = quantity
-	return s.cartRepo.Update(cart)
+	return s.cartRepo.Update(ctx, cart)
 }
 
 // DeleteCartItem 删除购物车中的单品
-func (s *cartService) DeleteCartItem(userID uint, cartID uint) error {
+func (s *cartService) DeleteCartItem(ctx context.Context, userID uint, cartID uint) error {
 	// 校验购物车记录是否属于当前用户
-	cart, err := s.cartRepo.GetByID(cartID)
+	cart, err := s.cartRepo.GetByID(ctx, cartID)
 	if err != nil {
 		return err
 	}
@@ -107,12 +109,12 @@ func (s *cartService) DeleteCartItem(userID uint, cartID uint) error {
 		return errors.New(errors.CodeForbidden, "无权删除他人的购物车")
 	}
 
-	return s.cartRepo.Delete(cartID)
+	return s.cartRepo.Delete(ctx, cartID)
 }
 
 // GetCartList 获取用户购物车列表
-func (s *cartService) GetCartList(userID uint) ([]*response.CartResponse, error) {
-	carts, err := s.cartRepo.GetByUserID(userID)
+func (s *cartService) GetCartList(ctx context.Context, userID uint) ([]*response.CartResponse, error) {
+	carts, err := s.cartRepo.GetByUserID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}

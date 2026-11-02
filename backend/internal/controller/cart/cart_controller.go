@@ -1,11 +1,12 @@
 package cart
 
 import (
+	"strconv"
+
 	"backend/internal/model/dto/request"
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/response"
 	"backend/internal/service/cart"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,7 +31,7 @@ func NewCartController(cartService cart.CartService) *CartController {
 // @Router /auth/cart/list [get]
 func (c *CartController) GetCartList(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
-	resp, err := c.cartService.GetCartList(userID)
+	resp, err := c.cartService.GetCartList(ctx.Request.Context(), userID)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -58,7 +59,7 @@ func (c *CartController) AddToCart(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	if err := c.cartService.AddToCart(userID, &req); err != nil {
+	if err := c.cartService.AddToCart(ctx.Request.Context(), userID, &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -93,7 +94,7 @@ func (c *CartController) UpdateCartQuantity(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	if err := c.cartService.UpdateCartQuantity(userID, uint(id), req.Quantity); err != nil {
+	if err := c.cartService.UpdateCartQuantity(ctx.Request.Context(), userID, uint(id), req.Quantity); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -121,7 +122,7 @@ func (c *CartController) DeleteCartItem(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	if err := c.cartService.DeleteCartItem(userID, uint(id)); err != nil {
+	if err := c.cartService.DeleteCartItem(ctx.Request.Context(), userID, uint(id)); err != nil {
 		response.Error(ctx, err)
 		return
 	}

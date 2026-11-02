@@ -17,15 +17,15 @@ import (
 )
 
 type ProductService interface {
-	CreateProduct(req *request.CreateProductRequest) (*response.ProductResponse, error)
-	UpdateProduct(id uint, req *request.UpdateProductRequest) error
-	DeleteProduct(id uint) error
-	GetProductByID(id uint) (*response.ProductResponse, error)
-	GetProductList(req *request.ProductListRequest) (*response.PageResponse, error)
-	WarmUpHotProducts(limit int) error
-	CalibrateAllSales() error
-	BatchGenerateKeywords() (int, error) // 为所有关键词为空的商品批量生成
-	InitBloomFilter() error               // 初始化布隆过滤器（启动时调用）
+	CreateProduct(ctx context.Context, req *request.CreateProductRequest) (*response.ProductResponse, error)
+	UpdateProduct(ctx context.Context, id uint, req *request.UpdateProductRequest) error
+	DeleteProduct(ctx context.Context, id uint) error
+	GetProductByID(ctx context.Context, id uint) (*response.ProductResponse, error)
+	GetProductList(ctx context.Context, req *request.ProductListRequest) (*response.PageResponse, error)
+	WarmUpHotProducts(ctx context.Context, limit int) error
+	CalibrateAllSales(ctx context.Context) error
+	BatchGenerateKeywords(ctx context.Context) (int, error) // 为所有关键词为空的商品批量生成
+	InitBloomFilter(ctx context.Context) error              // 初始化布隆过滤器（启动时调用）
 }
 
 type productService struct {
@@ -57,11 +57,11 @@ func NewProductService(
 }
 
 // CreateProduct 创建商品，关键词留空则自动生成，清理旧缓存防空值遮蔽
-func (s *productService) CreateProduct(req *request.CreateProductRequest) (*response.ProductResponse, error) {
+func (s *productService) CreateProduct(ctx context.Context, req *request.CreateProductRequest) (*response.ProductResponse, error) {
 	// 若未手动指定关键词，则自动从商品名和分类生成
 	keywordsStr := req.Keywords
 	if keywordsStr == "" {
-		keywordsStr = s.autoGenerateKeywords(req.Name, req.CategoryID)
+		keywordsStr = s.autoGenerateKeywords(ctx, req.Name, req.CategoryID)
 	}
 
 	product := &entity.Product{
@@ -74,7 +74,7 @@ func (s *productService) CreateProduct(req *request.CreateProductRequest) (*resp
 		Status:     req.Status,
 	}
 
-	if err := s.productRepo.Create(product); err != nil {
+	if err := s.productRepo.Create(ctx, product); err != nil {
 		return nil, err
 	}
 
@@ -105,8 +105,8 @@ func (s *productService) CreateProduct(req *request.CreateProductRequest) (*resp
 }
 
 // UpdateProduct 更新商品信息，同步清理单品和列表缓存
-func (s *productService) UpdateProduct(id uint, req *request.UpdateProductRequest) error {
-	product, err := s.productRepo.GetByID(id)
+func (s *productService) UpdateProduct(ctx context.Context, id uint, req *request.UpdateProductRequest) error {
+	product, err := s.productRepo.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func (s *productService) UpdateProduct(id uint, req *request.UpdateProductReques
 	product.Name = req.Name
 	// 关键词自动生成：若未手动填写则自动补充
 	if req.Keywords == "" {
-		product.Keywords = s.autoGenerateKeywords(req.Name, req.CategoryID)
+		product.Keywords = s.autoGenerateKeywords(ctx, req.Name, req.CategoryID)
 	} else {
 		product.Keywords = req.Keywords
 	}
@@ -124,7 +124,7 @@ func (s *productService) UpdateProduct(id uint, req *request.UpdateProductReques
 	product.Image = req.Image
 	product.Status = req.Status
 
-	if err := s.productRepo.Update(product); err != nil {
+	if err := s.productRepo.Update(ctx, product); err != nil {
 		return err
 	}
 
@@ -136,8 +136,8 @@ func (s *productService) UpdateProduct(id uint, req *request.UpdateProductReques
 }
 
 // DeleteProduct 软删除商品，清理所有相关缓存
-func (s *productService) DeleteProduct(id uint) error {
-	if err := s.productRepo.Delete(id); err != nil {
+func (s *productService) DeleteProduct(ctx context.Context, id uint) error {
+	if err := s.productRepo.Delete(ctx, id); err != nil {
 		return err
 	}
 
@@ -149,7 +149,7 @@ func (s *productService) DeleteProduct(id uint) error {
 }
 
 // GetProductByID 适配缓存降级 + 布隆过滤器防护
-func (s *productService) GetProductByID(id uint) (*response.ProductResponse, error) {
+func (s *productService) GetProductByID(ctx context.Context, id uint) (*response.ProductResponse, error) {
 	// 🔴 第一道防线：布隆过滤器快速判否（跳过不存在ID的缓存和数据库查询）
 	if s.bloomFilter != nil && !s.bloomFilter.MightContain(id) {
 		return nil, errors.New(errors.CodeNotFound, "商品不存在")
@@ -165,11 +165,10 @@ func (s *productService) GetProductByID(id uint) (*response.ProductResponse, err
 	if s.dbBreaker != nil && !s.dbBreaker.Allow() {
 		return nil, errors.New(errors.CodeServerError, "服务繁忙，请稍后重试")
 	}
-	ctx := context.Background()
 	if s.dbLimiter != nil && !s.dbLimiter.Acquire(ctx) {
 		return nil, errors.New(errors.CodeServerError, "系统繁忙，请稍后重试")
 	}
-	product, err := s.productRepo.GetByID(id)
+	product, err := s.productRepo.GetByID(ctx, id)
 	if s.dbLimiter != nil {
 		s.dbLimiter.Release()
 	}
@@ -201,7 +200,7 @@ func (s *productService) GetProductByID(id uint) (*response.ProductResponse, err
 }
 
 // GetProductList 分页查询商品列表（支持复杂筛选和排序）
-func (s *productService) GetProductList(req *request.ProductListRequest) (*response.PageResponse, error) {
+func (s *productService) GetProductList(ctx context.Context, req *request.ProductListRequest) (*response.PageResponse, error) {
 	// 参数默认值处理
 	if req.PageNum <= 0 {
 		req.PageNum = 1
@@ -214,7 +213,7 @@ func (s *productService) GetProductList(req *request.ProductListRequest) (*respo
 	}
 
 	// 调用Repository层的分页查询方法
-	products, total, err := s.productRepo.ListPage(req)
+	products, total, err := s.productRepo.ListPage(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -227,12 +226,12 @@ func (s *productService) GetProductList(req *request.ProductListRequest) (*respo
 }
 
 // WarmUpHotProducts 暴露预热方法给上层
-func (s *productService) WarmUpHotProducts(limit int) error {
-	return s.productCache.WarmUpHotProducts(s.productRepo, limit)
+func (s *productService) WarmUpHotProducts(ctx context.Context, limit int) error {
+	return s.productCache.WarmUpHotProducts(ctx, s.productRepo, limit)
 }
 
 // CalibrateAllSales 全量校准所有商品销量（每日凌晨执行）
-func (s *productService) CalibrateAllSales() error {
+func (s *productService) CalibrateAllSales(ctx context.Context) error {
 	log.Println("🔧 开始全量校准商品销量数据...")
 
 	// 1. 从订单表统计真实销量
@@ -252,7 +251,7 @@ func (s *productService) CalibrateAllSales() error {
 	}
 
 	// 2. 批量更新product表的sales字段
-	err = s.productRepo.BatchUpdateSales(stats)
+	err = s.productRepo.BatchUpdateSales(ctx, stats)
 	if err != nil {
 		return errors.Wrap(err, "批量更新商品销量失败")
 	}
@@ -269,16 +268,16 @@ func (s *productService) CalibrateAllSales() error {
 
 // autoGenerateKeywords 根据商品名和分类 ID 自动生成搜索关键词
 // 管理员无需手动填写，系统从品牌映射 + 属性映射 + 分类层级自动推导
-func (s *productService) autoGenerateKeywords(name string, categoryID uint) string {
+func (s *productService) autoGenerateKeywords(ctx context.Context, name string, categoryID uint) string {
 	var categoryPath []string
 
 	// 查询分类层级（最多向上查3层）
-	category, err := s.categoryRepo.GetByID(categoryID)
+	category, err := s.categoryRepo.GetByID(ctx, categoryID)
 	if err == nil && category != nil {
 		categoryPath = append(categoryPath, category.Name)
 		// 如果有父分类，也加入
 		if category.ParentID > 0 {
-			parent, err := s.categoryRepo.GetByID(category.ParentID)
+			parent, err := s.categoryRepo.GetByID(ctx, category.ParentID)
 			if err == nil && parent != nil {
 				categoryPath = append([]string{parent.Name}, categoryPath...)
 			}
@@ -320,7 +319,7 @@ func convertToProductResponseList(products []*entity.Product) []*response.Produc
 //
 // 调用时机：服务启动后异步执行（不阻塞 HTTP 服务）
 // 重建策略：每次调用重新分配内存并全量重建，避免删除产品的 ID 残留
-func (s *productService) InitBloomFilter() error {
+func (s *productService) InitBloomFilter(ctx context.Context) error {
 	if s.bloomFilter == nil {
 		return nil
 	}
@@ -328,7 +327,7 @@ func (s *productService) InitBloomFilter() error {
 	log.Println("🔍 开始构建布隆过滤器（从数据库加载所有产品ID）...")
 
 	// 从数据库获取所有产品 ID
-	ids, err := s.productRepo.GetAllIDs()
+	ids, err := s.productRepo.GetAllIDs(ctx)
 	if err != nil {
 		return errors.Wrap(err, "加载产品ID列表失败，布隆过滤器初始化中止")
 	}
@@ -350,7 +349,7 @@ func (s *productService) GetBloomFilter() *bloom.Filter {
 
 // BatchGenerateKeywords 为所有关键词为空的存量商品批量自动生成关键词
 // 返回成功生成的数量
-func (s *productService) BatchGenerateKeywords() (int, error) {
+func (s *productService) BatchGenerateKeywords(ctx context.Context) (int, error) {
 	log.Println("🔑 开始为存量商品批量生成关键词...")
 
 	db := s.productRepo.GetDB()
@@ -361,7 +360,7 @@ func (s *productService) BatchGenerateKeywords() (int, error) {
 
 	count := 0
 	for _, product := range products {
-		keywords := s.autoGenerateKeywords(product.Name, product.CategoryID)
+		keywords := s.autoGenerateKeywords(ctx, product.Name, product.CategoryID)
 		if keywords != "" {
 			if err := db.Model(&product).Update("keywords", keywords).Error; err != nil {
 				log.Printf("⚠️ 商品ID %d 关键词生成失败: %v", product.ID, err)

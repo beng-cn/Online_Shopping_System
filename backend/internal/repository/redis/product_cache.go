@@ -1,15 +1,16 @@
 package redis
 
 import (
-	"backend/internal/model/entity"
-	"backend/internal/pkg/errors"
-	"backend/internal/repository/mysql"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"time"
+
+	"backend/internal/model/entity"
+	"backend/internal/pkg/errors"
+	"backend/internal/repository/mysql"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -53,7 +54,7 @@ type ProductCache interface {
 	GetProductList(keyword string, categoryID string) ([]*entity.Product, error)
 	SetProductList(keyword string, categoryID string, products []*entity.Product) error
 	ClearAllProductList() error
-	WarmUpHotProducts(productRepo mysql.ProductRepository, limit int) error // 预热方法
+	WarmUpHotProducts(ctx context.Context, productRepo mysql.ProductRepository, limit int) error // 预热方法
 	// 分布式互斥锁（防缓存击穿）
 	TryLockProduct(id uint) bool
 	UnlockProduct(id uint)
@@ -275,15 +276,15 @@ func (c *productCache) ClearAllProductList() error {
 }
 
 // WarmUpHotProducts 按真实销量预热热门商品缓存
-func (c *productCache) WarmUpHotProducts(productRepo mysql.ProductRepository, limit int) error {
+func (c *productCache) WarmUpHotProducts(ctx context.Context, productRepo mysql.ProductRepository, limit int) error {
 	log.Println("🚀 开始预热热门商品缓存（按销量排序）...")
 
 	// 第一步：优先按销量获取热门商品
-	products, err := productRepo.ListHotProductsBySales(limit)
+	products, err := productRepo.ListHotProductsBySales(ctx, limit)
 	if err != nil {
 		log.Printf("⚠️ 按销量查询热门商品失败，降级为按创建时间排序: %v", err)
 		// 降级策略：按创建时间获取最新商品
-		products, err = productRepo.List("", "")
+		products, err = productRepo.List(ctx, "", "")
 		if err != nil {
 			return errors.Wrap(err, "预热商品缓存查询数据库失败")
 		}

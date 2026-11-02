@@ -1,22 +1,24 @@
 package category
 
 import (
+	"context"
+	"log"
+
 	"backend/internal/model/dto/request"
 	"backend/internal/model/dto/response"
 	"backend/internal/model/entity"
 	"backend/internal/pkg/errors"
 	"backend/internal/repository/mysql"
 	"backend/internal/repository/redis"
-	"log"
 )
 
 type CategoryService interface {
-	CreateCategory(req *request.CreateCategoryRequest) (*response.CategoryResponse, error)
-	UpdateCategory(id uint, req *request.UpdateCategoryRequest) error
-	DeleteCategory(id uint) error
-	GetParentCategories() ([]*response.CategoryResponse, error)
-	GetChildCategories(parentID uint) ([]*response.CategoryResponse, error)
-	WarmUpAllCategories() error
+	CreateCategory(ctx context.Context, req *request.CreateCategoryRequest) (*response.CategoryResponse, error)
+	UpdateCategory(ctx context.Context, id uint, req *request.UpdateCategoryRequest) error
+	DeleteCategory(ctx context.Context, id uint) error
+	GetParentCategories(ctx context.Context) ([]*response.CategoryResponse, error)
+	GetChildCategories(ctx context.Context, parentID uint) ([]*response.CategoryResponse, error)
+	WarmUpAllCategories(ctx context.Context) error
 }
 
 type categoryService struct {
@@ -36,14 +38,14 @@ func NewCategoryService(
 }
 
 // CreateCategory 创建新分类
-func (s *categoryService) CreateCategory(req *request.CreateCategoryRequest) (*response.CategoryResponse, error) {
+func (s *categoryService) CreateCategory(ctx context.Context, req *request.CreateCategoryRequest) (*response.CategoryResponse, error) {
 	category := &entity.Category{
 		Name:     req.Name,
 		ParentID: req.ParentID,
 		Status:   req.Status,
 	}
 
-	if err := s.categoryRepo.Create(category); err != nil {
+	if err := s.categoryRepo.Create(ctx, category); err != nil {
 		return nil, err
 	}
 
@@ -61,8 +63,8 @@ func (s *categoryService) CreateCategory(req *request.CreateCategoryRequest) (*r
 }
 
 // UpdateCategory 修改分类信息
-func (s *categoryService) UpdateCategory(id uint, req *request.UpdateCategoryRequest) error {
-	category, err := s.categoryRepo.GetByID(id)
+func (s *categoryService) UpdateCategory(ctx context.Context, id uint, req *request.UpdateCategoryRequest) error {
+	category, err := s.categoryRepo.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -71,7 +73,7 @@ func (s *categoryService) UpdateCategory(id uint, req *request.UpdateCategoryReq
 	category.ParentID = req.ParentID
 	category.Status = req.Status
 
-	if err := s.categoryRepo.Update(category); err != nil {
+	if err := s.categoryRepo.Update(ctx, category); err != nil {
 		return err
 	}
 
@@ -82,9 +84,9 @@ func (s *categoryService) UpdateCategory(id uint, req *request.UpdateCategoryReq
 }
 
 // DeleteCategory 删除分类（含子分类和商品校验）
-func (s *categoryService) DeleteCategory(id uint) error {
+func (s *categoryService) DeleteCategory(ctx context.Context, id uint) error {
 	// 检查分类下是否有商品
-	productCount, err := s.categoryRepo.CountProductsByCategoryID(id)
+	productCount, err := s.categoryRepo.CountProductsByCategoryID(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -93,7 +95,7 @@ func (s *categoryService) DeleteCategory(id uint) error {
 	}
 
 	// 检查分类下是否有子分类
-	childCount, err := s.categoryRepo.CountChildCategories(id)
+	childCount, err := s.categoryRepo.CountChildCategories(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -101,7 +103,7 @@ func (s *categoryService) DeleteCategory(id uint) error {
 		return errors.New(errors.CodeCategoryHasChild, "该分类下存在子分类，无法删除")
 	}
 
-	if err := s.categoryRepo.Delete(id); err != nil {
+	if err := s.categoryRepo.Delete(ctx, id); err != nil {
 		return err
 	}
 
@@ -112,13 +114,13 @@ func (s *categoryService) DeleteCategory(id uint) error {
 }
 
 // GetParentCategories 适配缓存降级
-func (s *categoryService) GetParentCategories() ([]*response.CategoryResponse, error) {
+func (s *categoryService) GetParentCategories(ctx context.Context) ([]*response.CategoryResponse, error) {
 	categories, _ := s.categoryCache.GetParentCategories()
 	if categories != nil {
 		return convertToCategoryResponseList(categories), nil
 	}
 
-	categories, err := s.categoryRepo.GetParentCategories()
+	categories, err := s.categoryRepo.GetParentCategories(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -138,13 +140,13 @@ func (s *categoryService) GetParentCategories() ([]*response.CategoryResponse, e
 }
 
 // GetChildCategories 适配缓存降级
-func (s *categoryService) GetChildCategories(parentID uint) ([]*response.CategoryResponse, error) {
+func (s *categoryService) GetChildCategories(ctx context.Context, parentID uint) ([]*response.CategoryResponse, error) {
 	categories, _ := s.categoryCache.GetChildCategories(parentID)
 	if categories != nil {
 		return convertToCategoryResponseList(categories), nil
 	}
 
-	categories, err := s.categoryRepo.GetChildCategories(parentID)
+	categories, err := s.categoryRepo.GetChildCategories(ctx, parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -164,8 +166,8 @@ func (s *categoryService) GetChildCategories(parentID uint) ([]*response.Categor
 }
 
 // WarmUpAllCategories 暴露预热方法给上层
-func (s *categoryService) WarmUpAllCategories() error {
-	return s.categoryCache.WarmUpAllCategories(s.categoryRepo)
+func (s *categoryService) WarmUpAllCategories(ctx context.Context) error {
+	return s.categoryCache.WarmUpAllCategories(ctx, s.categoryRepo)
 }
 
 // 转换为响应DTO

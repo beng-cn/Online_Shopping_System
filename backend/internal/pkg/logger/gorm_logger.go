@@ -1,10 +1,10 @@
 // Package logger GORM 慢查询自动埋点插件 — 生产级 SQL 监控基础设施
 //
 // 核心能力：
-//   1. 慢查询自动检测（默认阈值 200ms，可配置）
-//   2. 完整 SQL 语句 + 参数记录（非 DryRun 模式采样，避免生产全量日志爆炸）
-//   3. 请求追踪 ID 关联（从 Gin Context 提取 Request ID，实现请求→SQL 全链路追踪）
-//   4. 慢查询数量告警（单次请求 ≥3 条慢查询时打印 WARNING）
+//  1. 慢查询自动检测（默认阈值 200ms，可配置）
+//  2. 完整 SQL 语句 + 参数记录（非 DryRun 模式采样，避免生产全量日志爆炸）
+//  3. 请求追踪 ID 关联（Repository 通过 db.WithContext 传入请求 Context，实现请求→SQL 全链路追踪）
+//  4. 慢查询数量告警（单次请求 ≥3 条慢查询时打印 WARNING，计数由 Trace 中间件注入的指针累加）
 //
 // 面试亮点：GORM Logger Interface 的自定义实现，连接了 HTTP 层和数据库层的可观测性
 package logger
@@ -13,6 +13,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm/logger"
@@ -90,11 +91,11 @@ func (l *SlowQueryLogger) Trace(ctx context.Context, begin time.Time, fc func() 
 	case elapsed > l.SlowThreshold && l.LogLevel >= logger.Warn:
 		sql, rows := fc()
 		requestID := extractRequestID(ctx)
-		slowCount := countSlowQueries(ctx)
+		slowCount := recordSlowQuery(ctx)
 
 		if slowCount >= 3 {
 			log.Printf("🚨 [GORM 慢查询告警] 当前请求已产生 %d 条慢查询！耗时=%v 影响行数=%d 请求ID=%s SQL=%s",
-				slowCount+1, elapsed, rows, requestID, sql)
+				slowCount, elapsed, rows, requestID, sql)
 		} else {
 			log.Printf("🟡 [GORM SlowQuery] 耗时=%v 影响行数=%d 请求ID=%s SQL=%s",
 				elapsed, rows, requestID, sql)
@@ -124,15 +125,19 @@ func extractRequestID(ctx context.Context) string {
 	return "-"
 }
 
-// countSlowQueries 统计当前请求已产生的慢查询数量
-func countSlowQueries(ctx context.Context) int {
+// recordSlowQuery 累加"当前请求的慢查询数"并返回累加后的值
+//
+// 计数器的指针由 middleware.Trace 在请求入口放进 context.Context，
+// 这里通过原子操作累加，避免并发 SQL 之间互相覆盖。
+func recordSlowQuery(ctx context.Context) int {
 	if ctx == nil {
 		return 0
 	}
-	if count, ok := ctx.Value("slow_query_count").(int); ok {
-		return count
+	counter, ok := ctx.Value("slow_query_count").(*int64)
+	if !ok {
+		return 0
 	}
-	return 0
+	return int(atomic.AddInt64(counter, 1))
 }
 
 // FormatSQL 格式化 SQL 语句（去除多余空白，方便日志阅读）

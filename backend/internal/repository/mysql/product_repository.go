@@ -1,10 +1,13 @@
 package mysql
 
 import (
+	"context"
+	"strings"
+
 	"backend/internal/model/dto/request"
 	"backend/internal/model/entity"
+	"backend/internal/pkg/ctxutil"
 	"backend/internal/pkg/errors"
-	"strings"
 
 	"gorm.io/gorm"
 )
@@ -33,22 +36,22 @@ type SalesStat struct {
 }
 
 type ProductRepository interface {
-	Create(product *entity.Product) error
-	Update(product *entity.Product) error
-	Delete(id uint) error
-	GetByID(id uint) (*entity.Product, error)
-	GetByIDs(ids []uint) ([]*entity.Product, error) // 批量查询商品，避免 N+1 问题
-	List(keyword string, categoryID string) ([]*entity.Product, error)
+	Create(ctx context.Context, product *entity.Product) error
+	Update(ctx context.Context, product *entity.Product) error
+	Delete(ctx context.Context, id uint) error
+	GetByID(ctx context.Context, id uint) (*entity.Product, error)
+	GetByIDs(ctx context.Context, ids []uint) ([]*entity.Product, error) // 批量查询商品，避免 N+1 问题
+	List(ctx context.Context, keyword string, categoryID string) ([]*entity.Product, error)
 	// 乐观锁扣减库存，返回是否成功
-	DecreaseStockWithVersion(id uint, quantity int, version int) (bool, error)
+	DecreaseStockWithVersion(ctx context.Context, id uint, quantity int, version int) (bool, error)
 	WithTx(tx *gorm.DB) ProductRepository
-	ListHotProductsBySales(limit int) ([]*entity.Product, error)
-	IncreaseSales(id uint, quantity int) error
-	UpdateSales(id uint, sales int) error
+	ListHotProductsBySales(ctx context.Context, limit int) ([]*entity.Product, error)
+	IncreaseSales(ctx context.Context, id uint, quantity int) error
+	UpdateSales(ctx context.Context, id uint, sales int) error
 	GetDB() *gorm.DB
-	BatchUpdateSales(stats []SalesStat) error
-	ListPage(req *request.ProductListRequest) ([]*entity.Product, int64, error)
-	GetAllIDs() ([]uint, error) // 获取所有产品ID（用于布隆过滤器初始化）
+	BatchUpdateSales(ctx context.Context, stats []SalesStat) error
+	ListPage(ctx context.Context, req *request.ProductListRequest) ([]*entity.Product, int64, error)
+	GetAllIDs(ctx context.Context) ([]uint, error) // 获取所有产品ID（用于布隆过滤器初始化）
 }
 
 type productRepository struct {
@@ -61,24 +64,33 @@ func NewProductRepository(db *gorm.DB) ProductRepository {
 }
 
 // Create 新增商品
-func (r *productRepository) Create(product *entity.Product) error {
-	if err := r.db.Create(product).Error; err != nil {
+func (r *productRepository) Create(ctx context.Context, product *entity.Product) error {
+	db := r.db.WithContext(ctxutil.Or(ctx))
+	if err := db.Create(product).Error; err != nil {
 		return errors.Wrap(err, "创建商品失败!")
 	}
 	return nil
 }
 
 // Update 更新商品信息
-func (r *productRepository) Update(product *entity.Product) error {
-	if err := r.db.Model(product).Updates(product).Error; err != nil {
+//
+// 用 Select 显式列出要更新的列：GORM 对 struct 执行 Updates 时会跳过所有零值字段，
+// 导致"把商品下架(status=0)"、"把库存改为 0"、"清空图片"这类合法更新被静默丢弃。
+// 白名单同时排除了 sales、version —— 它们由销量统计和乐观锁各自维护，不应被这里覆盖。
+func (r *productRepository) Update(ctx context.Context, product *entity.Product) error {
+	db := r.db.WithContext(ctxutil.Or(ctx))
+	if err := db.Model(product).
+		Select("category_id", "name", "keywords", "price", "stock", "image", "status").
+		Updates(product).Error; err != nil {
 		return errors.Wrap(err, "更新商品失败!")
 	}
 	return nil
 }
 
 // Delete 软删除商品
-func (r *productRepository) Delete(id uint) error {
-	result := r.db.Delete(&entity.Product{}, id)
+func (r *productRepository) Delete(ctx context.Context, id uint) error {
+	db := r.db.WithContext(ctxutil.Or(ctx))
+	result := db.Delete(&entity.Product{}, id)
 	if result.Error != nil {
 		return errors.Wrap(result.Error, "删除商品失败!")
 	}
@@ -89,9 +101,10 @@ func (r *productRepository) Delete(id uint) error {
 }
 
 // GetByID 根据主键查询商品
-func (r *productRepository) GetByID(id uint) (*entity.Product, error) {
+func (r *productRepository) GetByID(ctx context.Context, id uint) (*entity.Product, error) {
+	db := r.db.WithContext(ctxutil.Or(ctx))
 	var product entity.Product
-	if err := r.db.First(&product, id).Error; err != nil {
+	if err := db.First(&product, id).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, errors.New(errors.CodeProductNotFound, "商品不存在!")
 		}
@@ -101,12 +114,13 @@ func (r *productRepository) GetByID(id uint) (*entity.Product, error) {
 }
 
 // GetByIDs 批量查询商品，使用 IN 查询一次获取所有商品，避免 N+1 问题
-func (r *productRepository) GetByIDs(ids []uint) ([]*entity.Product, error) {
+func (r *productRepository) GetByIDs(ctx context.Context, ids []uint) ([]*entity.Product, error) {
+	db := r.db.WithContext(ctxutil.Or(ctx))
 	if len(ids) == 0 {
 		return []*entity.Product{}, nil
 	}
 	var products []*entity.Product
-	if err := r.db.Where("id IN ?", ids).Find(&products).Error; err != nil {
+	if err := db.Where("id IN ?", ids).Find(&products).Error; err != nil {
 		return nil, errors.Wrap(err, "批量查询商品失败!")
 	}
 	return products, nil
@@ -116,18 +130,20 @@ func (r *productRepository) GetByIDs(ids []uint) ([]*entity.Product, error) {
 //
 // 使用 SELECT id 而非 SELECT *，减少数据传输量（每行仅 4-8 字节）
 // 百万级产品仅需 ~8MB 内存
-func (r *productRepository) GetAllIDs() ([]uint, error) {
+func (r *productRepository) GetAllIDs(ctx context.Context) ([]uint, error) {
+	db := r.db.WithContext(ctxutil.Or(ctx))
 	var ids []uint
-	if err := r.db.Model(&entity.Product{}).Pluck("id", &ids).Error; err != nil {
+	if err := db.Model(&entity.Product{}).Pluck("id", &ids).Error; err != nil {
 		return nil, errors.Wrap(err, "获取所有产品ID失败")
 	}
 	return ids, nil
 }
 
 // List 关键词搜索商品列表
-func (r *productRepository) List(keyword string, categoryID string) ([]*entity.Product, error) {
+func (r *productRepository) List(ctx context.Context, keyword string, categoryID string) ([]*entity.Product, error) {
+	db := r.db.WithContext(ctxutil.Or(ctx))
 	var products []*entity.Product
-	db := r.db.Model(&entity.Product{})
+	db = db.Model(&entity.Product{})
 
 	if keyword != "" {
 		db = db.Where("MATCH(name, keywords) AGAINST(? IN BOOLEAN MODE)", escapeFulltextKeyword(keyword))
@@ -143,8 +159,9 @@ func (r *productRepository) List(keyword string, categoryID string) ([]*entity.P
 }
 
 // DecreaseStockWithVersion 乐观锁扣减库存，version 不匹配返回 false
-func (r *productRepository) DecreaseStockWithVersion(id uint, quantity int, version int) (bool, error) {
-	result := r.db.Model(&entity.Product{}).
+func (r *productRepository) DecreaseStockWithVersion(ctx context.Context, id uint, quantity int, version int) (bool, error) {
+	db := r.db.WithContext(ctxutil.Or(ctx))
+	result := db.Model(&entity.Product{}).
 		Where("id = ? AND version = ?", id, version).
 		Updates(map[string]interface{}{
 			"stock":   gorm.Expr("stock - ?", quantity),
@@ -162,10 +179,11 @@ func (r *productRepository) WithTx(tx *gorm.DB) ProductRepository {
 }
 
 // ListHotProductsBySales 按销量降序获取热门商品
-func (r *productRepository) ListHotProductsBySales(limit int) ([]*entity.Product, error) {
+func (r *productRepository) ListHotProductsBySales(ctx context.Context, limit int) ([]*entity.Product, error) {
+	db := r.db.WithContext(ctxutil.Or(ctx))
 	var products []*entity.Product
 
-	err := r.db.Model(&entity.Product{}).
+	err := db.Model(&entity.Product{}).
 		Where("status = ?", 1).       // 只查询上架商品
 		Order("sales DESC, id DESC"). // 销量降序，销量相同按ID降序
 		Limit(limit).
@@ -179,8 +197,9 @@ func (r *productRepository) ListHotProductsBySales(limit int) ([]*entity.Product
 }
 
 // IncreaseSales 原子增加商品销量
-func (r *productRepository) IncreaseSales(id uint, quantity int) error {
-	result := r.db.Model(&entity.Product{}).
+func (r *productRepository) IncreaseSales(ctx context.Context, id uint, quantity int) error {
+	db := r.db.WithContext(ctxutil.Or(ctx))
+	result := db.Model(&entity.Product{}).
 		Where("id = ?", id).
 		Update("sales", gorm.Expr("sales + ?", quantity))
 
@@ -196,8 +215,9 @@ func (r *productRepository) IncreaseSales(id uint, quantity int) error {
 }
 
 // UpdateSales 全量更新商品销量
-func (r *productRepository) UpdateSales(id uint, sales int) error {
-	result := r.db.Model(&entity.Product{}).
+func (r *productRepository) UpdateSales(ctx context.Context, id uint, sales int) error {
+	db := r.db.WithContext(ctxutil.Or(ctx))
+	result := db.Model(&entity.Product{}).
 		Where("id = ?", id).
 		Update("sales", sales)
 
@@ -218,12 +238,13 @@ func (r *productRepository) GetDB() *gorm.DB {
 }
 
 // BatchUpdateSales 批量更新商品销量
-func (r *productRepository) BatchUpdateSales(stats []SalesStat) error {
+func (r *productRepository) BatchUpdateSales(ctx context.Context, stats []SalesStat) error {
+	db := r.db.WithContext(ctxutil.Or(ctx))
 	if len(stats) == 0 {
 		return nil
 	}
 
-	return r.db.Transaction(func(tx *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
 		for _, stat := range stats {
 			err := tx.Model(&entity.Product{}).
 				Where("id = ?", stat.ProductID).
@@ -238,11 +259,12 @@ func (r *productRepository) BatchUpdateSales(stats []SalesStat) error {
 }
 
 // ListPage 分页查询商品列表
-func (r *productRepository) ListPage(req *request.ProductListRequest) ([]*entity.Product, int64, error) {
+func (r *productRepository) ListPage(ctx context.Context, req *request.ProductListRequest) ([]*entity.Product, int64, error) {
+	db := r.db.WithContext(ctxutil.Or(ctx))
 	var products []*entity.Product
 	var total int64
 
-	db := r.db.Model(&entity.Product{}).Where("status = ?", 1) // 默认只查询上架商品
+	db = db.Model(&entity.Product{}).Where("status = ?", 1) // 默认只查询上架商品
 
 	// 关键词筛选：同时搜索商品名称和 keywords 别名字段
 	if req.Keyword != "" {

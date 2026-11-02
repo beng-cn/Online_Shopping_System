@@ -1,13 +1,14 @@
 package order
 
 import (
+	"net/http"
+	"strconv"
+
 	"backend/internal/model/dto/request"
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/response"
 	"backend/internal/service/order"
 	"backend/internal/service/payment"
-	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -46,7 +47,7 @@ func (c *OrderController) CreateOrder(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	resp, err := c.orderService.CreateOrder(userID, &req)
+	resp, err := c.orderService.CreateOrder(ctx.Request.Context(), userID, &req)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -66,7 +67,7 @@ func (c *OrderController) CreateOrder(ctx *gin.Context) {
 // @Router       /auth/order/list [get]
 func (c *OrderController) GetOrderList(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
-	resp, err := c.orderService.GetOrderList(userID)
+	resp, err := c.orderService.GetOrderList(ctx.Request.Context(), userID)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -93,7 +94,7 @@ func (c *OrderController) AliPayUnifiedOrder(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	payURL, err := c.orderService.GetAliPayURL(req.OrderID, userID)
+	payURL, err := c.orderService.GetAliPayURL(ctx.Request.Context(), req.OrderID, userID)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -121,7 +122,7 @@ func (c *OrderController) GetOrderItems(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	resp, err := c.orderService.GetOrderItems(uint(id), userID)
+	resp, err := c.orderService.GetOrderItems(ctx.Request.Context(), uint(id), userID)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -149,7 +150,7 @@ func (c *OrderController) DeleteOrder(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	if err := c.orderService.DeleteOrder(uint(id), userID); err != nil {
+	if err := c.orderService.DeleteOrder(ctx.Request.Context(), uint(id), userID); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -180,7 +181,7 @@ func (c *OrderController) AliPayNotify(ctx *gin.Context) {
 	}
 
 	// 根据商户订单号查询订单
-	order, err := c.orderService.GetOrderByOrderNo(noti.OutTradeNo)
+	order, err := c.orderService.GetOrderByOrderNo(ctx.Request.Context(), noti.OutTradeNo)
 	if err != nil {
 		ctx.String(http.StatusBadRequest, "fail")
 		return
@@ -193,7 +194,7 @@ func (c *OrderController) AliPayNotify(ctx *gin.Context) {
 	}
 
 	// 调用公共支付处理逻辑
-	if err := c.orderService.ProcessOrderPayment(order.ID); err != nil {
+	if err := c.orderService.ProcessOrderPayment(ctx.Request.Context(), order.ID); err != nil {
 		ctx.String(http.StatusInternalServerError, "fail")
 		return
 	}
@@ -222,7 +223,7 @@ func (c *OrderController) AliPayReturn(ctx *gin.Context) {
 	orderNo := ctx.Query("out_trade_no")
 
 	// 3. 查询订单
-	order, err := c.orderService.GetOrderByOrderNo(orderNo)
+	order, err := c.orderService.GetOrderByOrderNo(ctx.Request.Context(), orderNo)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -239,7 +240,7 @@ func (c *OrderController) AliPayReturn(ctx *gin.Context) {
 	}
 
 	// 5. 处理订单支付（本地开发核心，生产环境靠异步回调）
-	if err := c.orderService.ProcessOrderPayment(order.ID); err != nil {
+	if err := c.orderService.ProcessOrderPayment(ctx.Request.Context(), order.ID); err != nil {
 		response.Error(ctx, err)
 		return
 	}

@@ -63,12 +63,12 @@ func main() {
 		time.Sleep(3 * time.Second)
 
 		// 预热分类缓存（全量）
-		if err := router.CategoryService.WarmUpAllCategories(); err != nil {
+		if err := router.CategoryService.WarmUpAllCategories(context.Background()); err != nil {
 			log.Printf("⚠️ 分类缓存预热失败: %v", err)
 		}
 
 		// 初始化布隆过滤器（从数据库加载所有产品ID）
-		if err := router.ProductService.InitBloomFilter(); err != nil {
+		if err := router.ProductService.InitBloomFilter(context.Background()); err != nil {
 			log.Printf("⚠️ 布隆过滤器初始化失败: %v", err)
 		}
 
@@ -77,12 +77,12 @@ func main() {
 		if hotLimit <= 0 {
 			hotLimit = 100 // 默认值
 		}
-		if err := router.ProductService.WarmUpHotProducts(hotLimit); err != nil {
+		if err := router.ProductService.WarmUpHotProducts(context.Background(), hotLimit); err != nil {
 			log.Printf("⚠️ 热门商品缓存预热失败: %v", err)
 		}
 
 		// 秒杀崩溃恢复
-		router.FlashService.RecoverPendingOrders()
+		router.FlashService.RecoverPendingOrders(context.Background())
 	}()
 
 	// 秒杀自动预热扫描器（每30秒检查一次即将开始的活动）
@@ -106,7 +106,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				router.FlashService.AutoWarmUp()
+				router.FlashService.AutoWarmUp(context.Background())
 			case <-done:
 				log.Println("秒杀预热扫描器已停止")
 				return
@@ -165,7 +165,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				router.FlashService.GuardConsistency()
+				router.FlashService.GuardConsistency(context.Background())
 			case <-done:
 				log.Println("一致性守护器已停止")
 				return
@@ -194,7 +194,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				if err := router.ProductService.InitBloomFilter(); err != nil {
+				if err := router.ProductService.InitBloomFilter(context.Background()); err != nil {
 					log.Printf("⚠️ 布隆过滤器定时重建失败: %v", err)
 				}
 			case <-done:
@@ -227,7 +227,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				router.FlashService.ScanExpiredOrders()
+				router.FlashService.ScanExpiredOrders(context.Background())
 			case <-done:
 				log.Println("超时扫描器已停止")
 				return

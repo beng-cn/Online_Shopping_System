@@ -1,12 +1,13 @@
 package product
 
 import (
+	"log"
+	"strconv"
+
 	"backend/internal/model/dto/request"
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/response"
 	"backend/internal/service/product"
-	"log"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -50,7 +51,7 @@ func (c *ProductController) GetProductList(ctx *gin.Context) {
 		req.Keyword, req.CategoryID, req.PageNum, req.PageSize, req.Sort)
 
 	// 传递完整的req对象给Service层
-	resp, err := c.productService.GetProductList(&req)
+	resp, err := c.productService.GetProductList(ctx.Request.Context(), &req)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -77,7 +78,7 @@ func (c *ProductController) GetProductDetail(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := c.productService.GetProductByID(uint(id))
+	resp, err := c.productService.GetProductByID(ctx.Request.Context(), uint(id))
 	if err != nil {
 		response.Error(ctx, err)
 		return

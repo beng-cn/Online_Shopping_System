@@ -1,10 +1,11 @@
 package category
 
 import (
+	"strconv"
+
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/response"
 	"backend/internal/service/category"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,7 +28,7 @@ func NewCategoryController(categoryService category.CategoryService) *CategoryCo
 // @Success 200 {object} response.Response "查询成功"
 // @Router /product/category/parents [get]
 func (c *CategoryController) GetParentCategories(ctx *gin.Context) {
-	resp, err := c.categoryService.GetParentCategories()
+	resp, err := c.categoryService.GetParentCategories(ctx.Request.Context())
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -54,7 +55,7 @@ func (c *CategoryController) GetChildCategories(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := c.categoryService.GetChildCategories(uint(parentID))
+	resp, err := c.categoryService.GetChildCategories(ctx.Request.Context(), uint(parentID))
 	if err != nil {
 		response.Error(ctx, err)
 		return

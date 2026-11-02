@@ -1,12 +1,13 @@
 package flash
 
 import (
+	"strconv"
+	"time"
+
 	"backend/internal/model/dto/request"
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/response"
 	"backend/internal/service/flash"
-	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,7 +31,7 @@ func NewFlashController(flashService flash.FlashService) *FlashController {
 // @Success 200 {object} response.Response "查询成功"
 // @Router /flash/list [get]
 func (c *FlashController) ListActiveFlashSales(ctx *gin.Context) {
-	resp, err := c.flashService.ListActiveFlashSales()
+	resp, err := c.flashService.ListActiveFlashSales(ctx.Request.Context())
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -57,7 +58,7 @@ func (c *FlashController) GetFlashSaleDetail(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := c.flashService.GetFlashSaleDetail(uint(id))
+	resp, err := c.flashService.GetFlashSaleDetail(ctx.Request.Context(), uint(id))
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -85,7 +86,7 @@ func (c *FlashController) EnterFlashSale(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	resp, err := c.flashService.EnterFlashSale(userID, &req)
+	resp, err := c.flashService.EnterFlashSale(ctx.Request.Context(), userID, &req)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -113,7 +114,7 @@ func (c *FlashController) SnatchFlashSale(ctx *gin.Context) {
 	}
 
 	userID := ctx.GetUint("user_id")
-	resp, err := c.flashService.SnatchFlashSale(userID, &req)
+	resp, err := c.flashService.SnatchFlashSale(ctx.Request.Context(), userID, &req)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -131,7 +132,7 @@ func (c *FlashController) SnatchFlashSale(ctx *gin.Context) {
 // @Success 200 {object} response.Response "生成成功，返回captcha_id、captcha_image(base64)和expires_in"
 // @Router /auth/flash/captcha [get]
 func (c *FlashController) GenerateCaptcha(ctx *gin.Context) {
-	captcha, err := c.flashService.GenerateCaptcha()
+	captcha, err := c.flashService.GenerateCaptcha(ctx.Request.Context())
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -155,7 +156,7 @@ func (c *FlashController) GenerateCaptcha(ctx *gin.Context) {
 // @Router /auth/flash/orders [get]
 func (c *FlashController) GetUserFlashOrders(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
-	resp, err := c.flashService.GetUserFlashOrders(userID)
+	resp, err := c.flashService.GetUserFlashOrders(ctx.Request.Context(), userID)
 	if err != nil {
 		response.Error(ctx, err)
 		return

@@ -1,30 +1,33 @@
 package order
 
 import (
-	"backend/internal/model/dto/request"
-	"backend/internal/model/dto/response"
-	"backend/internal/model/entity"
-	"backend/internal/pkg/errors"
-	"backend/internal/repository/mysql"
-	"backend/internal/repository/redis"
-	"backend/internal/service/payment"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"time"
 
+	"backend/internal/model/dto/request"
+	"backend/internal/model/dto/response"
+	"backend/internal/model/entity"
+	"backend/internal/pkg/ctxutil"
+	"backend/internal/pkg/errors"
+	"backend/internal/repository/mysql"
+	"backend/internal/repository/redis"
+	"backend/internal/service/payment"
+
 	"gorm.io/gorm"
 )
 
 type OrderService interface {
-	CreateOrder(userID uint, req *request.CreateOrderRequest) (*response.OrderResponse, error)
-	PayOrder(orderID uint, userID uint) error
-	ProcessOrderPayment(orderID uint) error // 公共支付处理逻辑
-	GetOrderList(userID uint) ([]*response.OrderResponse, error)
-	GetOrderItems(orderID uint, userID uint) ([]*response.OrderItemResponse, error)
-	DeleteOrder(orderID uint, userID uint) error
-	GetAliPayURL(orderID uint, userID uint) (string, error)
-	GetOrderByOrderNo(orderNo string) (*entity.Order, error)
+	CreateOrder(ctx context.Context, userID uint, req *request.CreateOrderRequest) (*response.OrderResponse, error)
+	PayOrder(ctx context.Context, orderID uint, userID uint) error
+	ProcessOrderPayment(ctx context.Context, orderID uint) error // 公共支付处理逻辑
+	GetOrderList(ctx context.Context, userID uint) ([]*response.OrderResponse, error)
+	GetOrderItems(ctx context.Context, orderID uint, userID uint) ([]*response.OrderItemResponse, error)
+	DeleteOrder(ctx context.Context, orderID uint, userID uint) error
+	GetAliPayURL(ctx context.Context, orderID uint, userID uint) (string, error)
+	GetOrderByOrderNo(ctx context.Context, orderNo string) (*entity.Order, error)
 }
 
 type orderService struct {
@@ -59,9 +62,9 @@ func NewOrderService(
 }
 
 // CreateOrder 从购物车创建订单，含库存乐观锁扣减和事务保护
-func (s *orderService) CreateOrder(userID uint, req *request.CreateOrderRequest) (*response.OrderResponse, error) {
+func (s *orderService) CreateOrder(ctx context.Context, userID uint, req *request.CreateOrderRequest) (*response.OrderResponse, error) {
 	// 开启事务
-	tx := s.db.Begin()
+	tx := s.db.WithContext(ctxutil.Or(ctx)).Begin()
 	if tx.Error != nil {
 		return nil, errors.Wrap(tx.Error, "开启事务失败")
 	}
@@ -72,7 +75,7 @@ func (s *orderService) CreateOrder(userID uint, req *request.CreateOrderRequest)
 	}()
 
 	// 1. 查询用户选择的购物车商品
-	carts, err := s.cartRepo.WithTx(tx).GetByIDsAndUserID(req.CartIDs, userID)
+	carts, err := s.cartRepo.WithTx(tx).GetByIDsAndUserID(ctx, req.CartIDs, userID)
 	if err != nil {
 		tx.Rollback()
 		return nil, err
@@ -86,7 +89,7 @@ func (s *orderService) CreateOrder(userID uint, req *request.CreateOrderRequest)
 	var total float64
 	var orderItems []*entity.OrderItem
 	for _, cart := range carts {
-		product, err := s.productRepo.WithTx(tx).GetByID(cart.ProductID)
+		product, err := s.productRepo.WithTx(tx).GetByID(ctx, cart.ProductID)
 		if err != nil {
 			tx.Rollback()
 			return nil, err
@@ -119,7 +122,7 @@ func (s *orderService) CreateOrder(userID uint, req *request.CreateOrderRequest)
 		Total:   total,
 		Status:  0,
 	}
-	if err := s.orderRepo.WithTx(tx).Create(order); err != nil {
+	if err := s.orderRepo.WithTx(tx).Create(ctx, order); err != nil {
 		tx.Rollback()
 		return nil, err
 	}
@@ -128,13 +131,13 @@ func (s *orderService) CreateOrder(userID uint, req *request.CreateOrderRequest)
 	for i := range orderItems {
 		orderItems[i].OrderID = order.ID
 	}
-	if err := s.orderItemRepo.WithTx(tx).BatchCreate(orderItems); err != nil {
+	if err := s.orderItemRepo.WithTx(tx).BatchCreate(ctx, orderItems); err != nil {
 		tx.Rollback()
 		return nil, err
 	}
 
 	// 6. 删除已下单的购物车商品
-	if err := s.cartRepo.WithTx(tx).DeleteByIDs(req.CartIDs); err != nil {
+	if err := s.cartRepo.WithTx(tx).DeleteByIDs(ctx, req.CartIDs); err != nil {
 		tx.Rollback()
 		return nil, err
 	}
@@ -154,9 +157,9 @@ func (s *orderService) CreateOrder(userID uint, req *request.CreateOrderRequest)
 }
 
 // PayOrder 订单支付处理，校验归属并更新状态为已支付
-func (s *orderService) PayOrder(orderID uint, userID uint) error {
+func (s *orderService) PayOrder(ctx context.Context, orderID uint, userID uint) error {
 	// 校验订单是否属于当前用户
-	order, err := s.orderRepo.GetByID(orderID)
+	order, err := s.orderRepo.GetByID(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -173,12 +176,12 @@ func (s *orderService) PayOrder(orderID uint, userID uint) error {
 	}
 
 	// 调用公共支付处理逻辑
-	return s.ProcessOrderPayment(orderID)
+	return s.ProcessOrderPayment(ctx, orderID)
 }
 
 // 根据订单号查询订单
-func (s *orderService) GetOrderByOrderNo(orderNo string) (*entity.Order, error) {
-	order, err := s.orderRepo.GetByOrderNo(orderNo)
+func (s *orderService) GetOrderByOrderNo(ctx context.Context, orderNo string) (*entity.Order, error) {
+	order, err := s.orderRepo.GetByOrderNo(ctx, orderNo)
 	if err != nil {
 		return nil, err
 	}
@@ -187,9 +190,9 @@ func (s *orderService) GetOrderByOrderNo(orderNo string) (*entity.Order, error) 
 
 // ProcessOrderPayment 处理订单支付（公共方法，被 PayOrder、AliPayNotify、AliPayReturn 调用）
 // 使用条件UPDATE防止与秒杀超时扫描器竞态
-func (s *orderService) ProcessOrderPayment(orderID uint) error {
+func (s *orderService) ProcessOrderPayment(ctx context.Context, orderID uint) error {
 	// 开启事务
-	tx := s.db.Begin()
+	tx := s.db.WithContext(ctxutil.Or(ctx)).Begin()
 	if tx.Error != nil {
 		return errors.Wrap(tx.Error, "开启事务失败")
 	}
@@ -200,7 +203,7 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 	}()
 
 	// 1. 查询订单并做状态幂等校验
-	order, err := s.orderRepo.WithTx(tx).GetByID(orderID)
+	order, err := s.orderRepo.WithTx(tx).GetByID(ctx, orderID)
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -219,7 +222,7 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 	// status=0(待支付)或status=3(秒杀冷却期)均可支付
 
 	// 2. 查询订单项
-	orderItems, err := s.orderItemRepo.WithTx(tx).GetByOrderID(orderID)
+	orderItems, err := s.orderItemRepo.WithTx(tx).GetByOrderID(ctx, orderID)
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -228,7 +231,7 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 	// 3. 乐观锁扣减库存
 	for _, item := range orderItems {
 		for retry := 0; retry < 3; retry++ {
-			product, err := s.productRepo.WithTx(tx).GetByID(item.ProductID)
+			product, err := s.productRepo.WithTx(tx).GetByID(ctx, item.ProductID)
 			if err != nil {
 				tx.Rollback()
 				return err
@@ -238,13 +241,13 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 				return errors.Errorf(errors.CodeStockInsufficient, "商品《%s》库存不足，剩余%d件", product.Name, product.Stock)
 			}
 			// 乐观锁更新库存
-			success, err := s.productRepo.WithTx(tx).DecreaseStockWithVersion(product.ID, item.Quantity, product.Version)
+			success, err := s.productRepo.WithTx(tx).DecreaseStockWithVersion(ctx, product.ID, item.Quantity, product.Version)
 			if err != nil {
 				tx.Rollback()
 				return err
 			}
 			if success {
-				if err := s.productRepo.WithTx(tx).IncreaseSales(item.ProductID, item.Quantity); err != nil {
+				if err := s.productRepo.WithTx(tx).IncreaseSales(ctx, item.ProductID, item.Quantity); err != nil {
 					tx.Rollback()
 					return err
 				}
@@ -274,7 +277,7 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 		// 状态已被并发修改（超时扫描器可能已将status从0改为3或2）
 		tx.Rollback()
 		// 重新查询确认最终状态
-		current, _ := s.orderRepo.GetByID(orderID)
+		current, _ := s.orderRepo.GetByID(ctx, orderID)
 		if current != nil && current.Status == 1 {
 			return nil // 已被其他支付流程处理，幂等返回
 		}
@@ -293,8 +296,8 @@ func (s *orderService) ProcessOrderPayment(orderID uint) error {
 }
 
 // GetOrderList 分页获取用户订单列表
-func (s *orderService) GetOrderList(userID uint) ([]*response.OrderResponse, error) {
-	orders, err := s.orderRepo.GetByUserID(userID)
+func (s *orderService) GetOrderList(ctx context.Context, userID uint) ([]*response.OrderResponse, error) {
+	orders, err := s.orderRepo.GetByUserID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -313,9 +316,9 @@ func (s *orderService) GetOrderList(userID uint) ([]*response.OrderResponse, err
 }
 
 // GetOrderItems 获取订单项详情（优化：批量查询商品，消除 N+1 问题）
-func (s *orderService) GetOrderItems(orderID uint, userID uint) ([]*response.OrderItemResponse, error) {
+func (s *orderService) GetOrderItems(ctx context.Context, orderID uint, userID uint) ([]*response.OrderItemResponse, error) {
 	// 校验订单是否属于当前用户
-	order, err := s.orderRepo.GetByID(orderID)
+	order, err := s.orderRepo.GetByID(ctx, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +327,7 @@ func (s *orderService) GetOrderItems(orderID uint, userID uint) ([]*response.Ord
 	}
 
 	// 查询订单项
-	items, err := s.orderItemRepo.GetByOrderID(orderID)
+	items, err := s.orderItemRepo.GetByOrderID(ctx, orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +341,7 @@ func (s *orderService) GetOrderItems(orderID uint, userID uint) ([]*response.Ord
 	for i, item := range items {
 		productIDs[i] = item.ProductID
 	}
-	products, err := s.productRepo.GetByIDs(productIDs)
+	products, err := s.productRepo.GetByIDs(ctx, productIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -368,9 +371,9 @@ func (s *orderService) GetOrderItems(orderID uint, userID uint) ([]*response.Ord
 }
 
 // DeleteOrder 软删除订单（仅待支付状态可删）
-func (s *orderService) DeleteOrder(orderID uint, userID uint) error {
+func (s *orderService) DeleteOrder(ctx context.Context, orderID uint, userID uint) error {
 	// 校验订单是否属于当前用户
-	order, err := s.orderRepo.GetByID(orderID)
+	order, err := s.orderRepo.GetByID(ctx, orderID)
 	if err != nil {
 		return err
 	}
@@ -379,7 +382,7 @@ func (s *orderService) DeleteOrder(orderID uint, userID uint) error {
 	}
 
 	// 开启事务
-	tx := s.db.Begin()
+	tx := s.db.WithContext(ctxutil.Or(ctx)).Begin()
 	if tx.Error != nil {
 		return errors.Wrap(tx.Error, "开启事务失败")
 	}
@@ -390,13 +393,13 @@ func (s *orderService) DeleteOrder(orderID uint, userID uint) error {
 	}()
 
 	// 删除订单项
-	if err := s.orderItemRepo.WithTx(tx).DeleteByOrderID(orderID); err != nil {
+	if err := s.orderItemRepo.WithTx(tx).DeleteByOrderID(ctx, orderID); err != nil {
 		tx.Rollback()
 		return err
 	}
 
 	// 删除订单
-	if err := s.orderRepo.WithTx(tx).Delete(orderID); err != nil {
+	if err := s.orderRepo.WithTx(tx).Delete(ctx, orderID); err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -410,9 +413,9 @@ func (s *orderService) DeleteOrder(orderID uint, userID uint) error {
 }
 
 // GetAliPayURL 生成支付宝支付链接
-func (s *orderService) GetAliPayURL(orderID uint, userID uint) (string, error) {
+func (s *orderService) GetAliPayURL(ctx context.Context, orderID uint, userID uint) (string, error) {
 	// 校验订单是否属于当前用户
-	order, err := s.orderRepo.GetByID(orderID)
+	order, err := s.orderRepo.GetByID(ctx, orderID)
 	if err != nil {
 		return "", err
 	}

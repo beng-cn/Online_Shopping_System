@@ -1,6 +1,8 @@
 package user
 
 import (
+	"context"
+
 	"backend/internal/model/dto/request"
 	"backend/internal/model/dto/response"
 	"backend/internal/model/entity"
@@ -12,17 +14,17 @@ import (
 )
 
 type UserService interface {
-	Register(req *request.RegisterRequest) error
-	Login(req *request.LoginRequest) (*response.LoginResponse, error)
-	UpdateUserInfo(userID uint, req *request.UpdateUserInfoRequest) error
-	GetUserInfo(userID uint) (*response.UserResponse, error)
-	UpdateUserStatus(id uint, status int) error
-	DeleteUser(id uint) error
-	ListUsers(pageNum int, pageSize int, keyword string) (*response.PageResponse, error)
-	ResetUserPassword(id uint, req *request.ResetUserPasswordRequest) error // 管理员重置用户密码
-	VerifyAdminPin(userID uint, req *request.VerifyAdminPinRequest) error // 验证管理员PIN码
-	SetAdminPin(userID uint, req *request.SetAdminPinRequest) error       // 设置管理员PIN码
-	ResetPasswordByPhone(req *request.ForgotPasswordRequest) error        // 通过手机号找回密码
+	Register(ctx context.Context, req *request.RegisterRequest) error
+	Login(ctx context.Context, req *request.LoginRequest) (*response.LoginResponse, error)
+	UpdateUserInfo(ctx context.Context, userID uint, req *request.UpdateUserInfoRequest) error
+	GetUserInfo(ctx context.Context, userID uint) (*response.UserResponse, error)
+	UpdateUserStatus(ctx context.Context, id uint, status int) error
+	DeleteUser(ctx context.Context, id uint) error
+	ListUsers(ctx context.Context, pageNum int, pageSize int, keyword string) (*response.PageResponse, error)
+	ResetUserPassword(ctx context.Context, id uint, req *request.ResetUserPasswordRequest) error // 管理员重置用户密码
+	VerifyAdminPin(ctx context.Context, userID uint, req *request.VerifyAdminPinRequest) error   // 验证管理员PIN码
+	SetAdminPin(ctx context.Context, userID uint, req *request.SetAdminPinRequest) error         // 设置管理员PIN码
+	ResetPasswordByPhone(ctx context.Context, req *request.ForgotPasswordRequest) error          // 通过手机号找回密码
 }
 
 type userService struct {
@@ -39,9 +41,9 @@ func NewUserService(userRepo mysql.UserRepository, jwtUtil *jwt.JWTUtil) UserSer
 }
 
 // Register 用户注册，bcrypt 加密密码，校验用户名唯一
-func (s *userService) Register(req *request.RegisterRequest) error {
+func (s *userService) Register(ctx context.Context, req *request.RegisterRequest) error {
 	// 检查用户名是否已存在
-	_, err := s.userRepo.GetByUsername(req.Username)
+	_, err := s.userRepo.GetByUsername(ctx, req.Username)
 	if err == nil {
 		return errors.New(errors.CodeUserAlreadyExists, "用户名已存在")
 	}
@@ -67,13 +69,13 @@ func (s *userService) Register(req *request.RegisterRequest) error {
 		RoleID:   2, // 默认普通用户
 	}
 
-	return s.userRepo.Create(user)
+	return s.userRepo.Create(ctx, user)
 }
 
 // Login 用户登录，校验密码并签发 JWT Token（含 JTI 唯一标识）
-func (s *userService) Login(req *request.LoginRequest) (*response.LoginResponse, error) {
+func (s *userService) Login(ctx context.Context, req *request.LoginRequest) (*response.LoginResponse, error) {
 	// 查询用户
-	user, err := s.userRepo.GetByUsername(req.Username)
+	user, err := s.userRepo.GetByUsername(ctx, req.Username)
 	if err != nil {
 		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return nil, errors.New(errors.CodeUserNotFound, "用户不存在")
@@ -117,8 +119,8 @@ func (s *userService) Login(req *request.LoginRequest) (*response.LoginResponse,
 }
 
 // UpdateUserInfo 更新用户个人信息（昵称/邮箱/手机）
-func (s *userService) UpdateUserInfo(userID uint, req *request.UpdateUserInfoRequest) error {
-	user, err := s.userRepo.GetByID(userID)
+func (s *userService) UpdateUserInfo(ctx context.Context, userID uint, req *request.UpdateUserInfoRequest) error {
+	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return errors.New(errors.CodeUserNotFound, "用户不存在")
@@ -137,17 +139,17 @@ func (s *userService) UpdateUserInfo(userID uint, req *request.UpdateUserInfoReq
 		user.Phone = req.Phone
 	}
 
-	return s.userRepo.Update(user)
+	return s.userRepo.Update(ctx, user)
 }
 
 // GetUserInfo 根据用户ID获取用户信息
-func (s *userService) GetUserInfo(userID uint) (*response.UserResponse, error) {
+func (s *userService) GetUserInfo(ctx context.Context, userID uint) (*response.UserResponse, error) {
 	// 防御性检查：防止无效ID查询
 	if userID == 0 {
 		return nil, errors.New(errors.CodeUserNotFound, "用户不存在")
 	}
 
-	user, err := s.userRepo.GetByID(userID)
+	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return nil, errors.New(errors.CodeUserNotFound, "用户不存在")
@@ -173,7 +175,7 @@ func (s *userService) GetUserInfo(userID uint) (*response.UserResponse, error) {
 }
 
 // ListUsers 分页获取用户列表（管理员功能）
-func (s *userService) ListUsers(pageNum int, pageSize int, keyword string) (*response.PageResponse, error) {
+func (s *userService) ListUsers(ctx context.Context, pageNum int, pageSize int, keyword string) (*response.PageResponse, error) {
 	// 参数校验和默认值处理
 	if pageNum <= 0 {
 		pageNum = 1
@@ -182,7 +184,7 @@ func (s *userService) ListUsers(pageNum int, pageSize int, keyword string) (*res
 		pageSize = 10
 	}
 
-	users, total, err := s.userRepo.List(pageNum, pageSize, keyword)
+	users, total, err := s.userRepo.List(ctx, pageNum, pageSize, keyword)
 	if err != nil {
 		return nil, err
 	}
@@ -207,9 +209,9 @@ func (s *userService) ListUsers(pageNum int, pageSize int, keyword string) (*res
 }
 
 // UpdateUserStatus 启用/禁用用户账号（管理员功能）
-func (s *userService) UpdateUserStatus(id uint, status int) error {
+func (s *userService) UpdateUserStatus(ctx context.Context, id uint, status int) error {
 	// 禁止禁用管理员
-	user, err := s.userRepo.GetByID(id)
+	user, err := s.userRepo.GetByID(ctx, id)
 	if err != nil {
 		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return errors.New(errors.CodeUserNotFound, "用户不存在")
@@ -220,13 +222,13 @@ func (s *userService) UpdateUserStatus(id uint, status int) error {
 		return errors.New(errors.CodeForbidden, "禁止禁用管理员用户")
 	}
 
-	return s.userRepo.UpdateStatus(id, status)
+	return s.userRepo.UpdateStatus(ctx, id, status)
 }
 
 // DeleteUser 软删除用户（管理员功能）
-func (s *userService) DeleteUser(id uint) error {
+func (s *userService) DeleteUser(ctx context.Context, id uint) error {
 	// 禁止删除管理员
-	user, err := s.userRepo.GetByID(id)
+	user, err := s.userRepo.GetByID(ctx, id)
 	if err != nil {
 		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return errors.New(errors.CodeUserNotFound, "用户不存在")
@@ -237,14 +239,14 @@ func (s *userService) DeleteUser(id uint) error {
 		return errors.New(errors.CodeForbidden, "禁止删除管理员用户")
 	}
 
-	return s.userRepo.Delete(id)
+	return s.userRepo.Delete(ctx, id)
 }
 
 // ResetUserPassword 管理员重置用户密码
 // bcrypt 是单向加密，无法解密原文，因此提供重置功能而非查看
-func (s *userService) ResetUserPassword(id uint, req *request.ResetUserPasswordRequest) error {
+func (s *userService) ResetUserPassword(ctx context.Context, id uint, req *request.ResetUserPasswordRequest) error {
 	// 查询用户是否存在
-	user, err := s.userRepo.GetByID(id)
+	user, err := s.userRepo.GetByID(ctx, id)
 	if err != nil {
 		if errors.IsCode(err, errors.CodeUserNotFound) {
 			return errors.New(errors.CodeUserNotFound, "用户不存在")
@@ -259,13 +261,13 @@ func (s *userService) ResetUserPassword(id uint, req *request.ResetUserPasswordR
 	}
 
 	user.Password = string(hash)
-	return s.userRepo.Update(user)
+	return s.userRepo.Update(ctx, user)
 }
 
 // VerifyAdminPin 验证管理员PIN码（管理员访问后台的二次验证）
-func (s *userService) VerifyAdminPin(userID uint, req *request.VerifyAdminPinRequest) error {
+func (s *userService) VerifyAdminPin(ctx context.Context, userID uint, req *request.VerifyAdminPinRequest) error {
 	// 查询用户
-	user, err := s.userRepo.GetByID(userID)
+	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -290,9 +292,9 @@ func (s *userService) VerifyAdminPin(userID uint, req *request.VerifyAdminPinReq
 
 // ResetPasswordByPhone 通过手机号找回密码（公开接口，无需登录，仅限普通用户）
 // 管理员不可通过此接口重置密码，只能通过数据库直接修改
-func (s *userService) ResetPasswordByPhone(req *request.ForgotPasswordRequest) error {
+func (s *userService) ResetPasswordByPhone(ctx context.Context, req *request.ForgotPasswordRequest) error {
 	// 通过手机号查找用户
-	user, err := s.userRepo.GetByPhone(req.Phone)
+	user, err := s.userRepo.GetByPhone(ctx, req.Phone)
 	if err != nil {
 		return err // 手机号未注册或查询失败
 	}
@@ -314,13 +316,13 @@ func (s *userService) ResetPasswordByPhone(req *request.ForgotPasswordRequest) e
 	}
 
 	user.Password = string(hash)
-	return s.userRepo.Update(user)
+	return s.userRepo.Update(ctx, user)
 }
 
 // SetAdminPin 设置管理员PIN码
-func (s *userService) SetAdminPin(userID uint, req *request.SetAdminPinRequest) error {
+func (s *userService) SetAdminPin(ctx context.Context, userID uint, req *request.SetAdminPinRequest) error {
 	// 查询用户
-	user, err := s.userRepo.GetByID(userID)
+	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -337,5 +339,5 @@ func (s *userService) SetAdminPin(userID uint, req *request.SetAdminPinRequest) 
 	}
 
 	user.AdminPin = string(hash)
-	return s.userRepo.Update(user)
+	return s.userRepo.Update(ctx, user)
 }

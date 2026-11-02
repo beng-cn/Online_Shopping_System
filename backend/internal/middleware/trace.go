@@ -21,6 +21,10 @@ import (
 // 导出以便其他包（如 GORM Logger）从 Context 中提取 Request ID
 const RequestIDKey = "request_id"
 
+// SlowQueryCountKey 是 context.Context 中"当前请求慢查询计数"的键名，
+// 值为 *int64（由 Trace 中间件创建，GORM 日志插件通过指针累加）
+const SlowQueryCountKey = "slow_query_count"
+
 // Trace 请求追踪中间件 — 为每个请求注入唯一追踪 ID
 //
 // 使用方式：
@@ -41,6 +45,9 @@ func Trace() gin.HandlerFunc {
 
 		// 注入 context.Context（供 GORM db.WithContext(ctx) 链路追踪）
 		ctx := context.WithValue(c.Request.Context(), RequestIDKey, requestID)
+		// 慢查询计数器：GORM 日志插件通过这个指针累加，实现"单请求慢查询次数"告警
+		slowCount := int64(0)
+		ctx = context.WithValue(ctx, SlowQueryCountKey, &slowCount)
 		c.Request = c.Request.WithContext(ctx)
 
 		// 注入 Response Header（方便前端/客户端定位问题）

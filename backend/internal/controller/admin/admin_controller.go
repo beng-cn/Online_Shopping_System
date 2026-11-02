@@ -1,11 +1,6 @@
 package admin
 
 import (
-	"backend/internal/model/dto/request"
-	"backend/internal/pkg/errors"
-	"backend/internal/pkg/response"
-	"backend/internal/service/category"
-	"backend/internal/service/product"
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
@@ -17,6 +12,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"backend/internal/model/dto/request"
+	"backend/internal/pkg/errors"
+	"backend/internal/pkg/response"
+	"backend/internal/service/category"
+	"backend/internal/service/product"
 
 	"github.com/gin-gonic/gin"
 )
@@ -54,7 +55,7 @@ func (c *AdminController) CreateProduct(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := c.productService.CreateProduct(&req)
+	resp, err := c.productService.CreateProduct(ctx.Request.Context(), &req)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -88,7 +89,7 @@ func (c *AdminController) UpdateProduct(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.productService.UpdateProduct(uint(id), &req); err != nil {
+	if err := c.productService.UpdateProduct(ctx.Request.Context(), uint(id), &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -114,7 +115,7 @@ func (c *AdminController) DeleteProduct(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.productService.DeleteProduct(uint(id)); err != nil {
+	if err := c.productService.DeleteProduct(ctx.Request.Context(), uint(id)); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -139,7 +140,7 @@ func (c *AdminController) CreateCategory(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := c.categoryService.CreateCategory(&req)
+	resp, err := c.categoryService.CreateCategory(ctx.Request.Context(), &req)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -173,7 +174,7 @@ func (c *AdminController) UpdateCategory(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.categoryService.UpdateCategory(uint(id), &req); err != nil {
+	if err := c.categoryService.UpdateCategory(ctx.Request.Context(), uint(id), &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -199,7 +200,7 @@ func (c *AdminController) DeleteCategory(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.categoryService.DeleteCategory(uint(id)); err != nil {
+	if err := c.categoryService.DeleteCategory(ctx.Request.Context(), uint(id)); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -317,7 +318,7 @@ func (c *AdminController) UploadImage(ctx *gin.Context) {
 // @Success      200 {object} response.Response
 // @Router       /admin/product/batch-keywords [post]
 func (c *AdminController) BatchGenerateKeywords(ctx *gin.Context) {
-	count, err := c.productService.BatchGenerateKeywords()
+	count, err := c.productService.BatchGenerateKeywords(ctx.Request.Context())
 	if err != nil {
 		response.Error(ctx, err)
 		return

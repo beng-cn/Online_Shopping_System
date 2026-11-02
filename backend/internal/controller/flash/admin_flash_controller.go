@@ -1,11 +1,12 @@
 package flash
 
 import (
+	"strconv"
+
 	"backend/internal/model/dto/request"
 	"backend/internal/pkg/errors"
 	"backend/internal/pkg/response"
 	"backend/internal/service/flash"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -38,7 +39,7 @@ func (c *AdminFlashController) CreateFlashSale(ctx *gin.Context) {
 		return
 	}
 
-	flash, err := c.flashService.CreateFlashSale(&req)
+	flash, err := c.flashService.CreateFlashSale(ctx.Request.Context(), &req)
 	if err != nil {
 		response.Error(ctx, err)
 		return
@@ -72,7 +73,7 @@ func (c *AdminFlashController) UpdateFlashSale(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.flashService.UpdateFlashSale(uint(id), &req); err != nil {
+	if err := c.flashService.UpdateFlashSale(ctx.Request.Context(), uint(id), &req); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -98,7 +99,7 @@ func (c *AdminFlashController) WarmUpFlashSale(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.flashService.WarmUpFlashSale(uint(id)); err != nil {
+	if err := c.flashService.WarmUpFlashSale(ctx.Request.Context(), uint(id)); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -124,7 +125,7 @@ func (c *AdminFlashController) EndFlashSale(ctx *gin.Context) {
 		return
 	}
 
-	if err := c.flashService.EndFlashSale(uint(id)); err != nil {
+	if err := c.flashService.EndFlashSale(ctx.Request.Context(), uint(id)); err != nil {
 		response.Error(ctx, err)
 		return
 	}
@@ -141,7 +142,7 @@ func (c *AdminFlashController) EndFlashSale(ctx *gin.Context) {
 // @Success 200 {object} response.Response "查询成功"
 // @Router /admin/flash/list [get]
 func (c *AdminFlashController) ListAllFlashSales(ctx *gin.Context) {
-	resp, err := c.flashService.ListAllFlashSales()
+	resp, err := c.flashService.ListAllFlashSales(ctx.Request.Context())
 	if err != nil {
 		response.Error(ctx, err)
 		return

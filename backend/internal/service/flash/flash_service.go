@@ -1,16 +1,7 @@
 package flash
 
 import (
-	"backend/internal/config"
-	"backend/internal/model/dto/request"
-	"backend/internal/model/dto/response"
-	"backend/internal/model/entity"
-	"backend/internal/pkg/captcha"
-	"backend/internal/pkg/errors"
-	"backend/internal/pkg/flashinventory"
-	"backend/internal/pkg/flashlimiter"
-	"backend/internal/repository/mysql"
-	"backend/internal/repository/redis"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -21,50 +12,62 @@ import (
 	"sync"
 	"time"
 
+	"backend/internal/config"
+	"backend/internal/model/dto/request"
+	"backend/internal/model/dto/response"
+	"backend/internal/model/entity"
+	"backend/internal/pkg/captcha"
+	"backend/internal/pkg/ctxutil"
+	"backend/internal/pkg/errors"
+	"backend/internal/pkg/flashinventory"
+	"backend/internal/pkg/flashlimiter"
+	"backend/internal/repository/mysql"
+	"backend/internal/repository/redis"
+
 	"gorm.io/gorm"
 )
 
 // FlashService 秒杀业务逻辑接口
 type FlashService interface {
 	// === 管理员操作 ===
-	CreateFlashSale(req *request.CreateFlashSaleRequest) (*entity.FlashSale, error)
-	UpdateFlashSale(id uint, req *request.UpdateFlashSaleRequest) error
-	WarmUpFlashSale(id uint) error               // 预热库存到Redis + 初始化内存标记
-	EndFlashSale(id uint) error                  // 强制结束秒杀
-	ListAllFlashSales() ([]*response.AdminFlashSaleResponse, error)
+	CreateFlashSale(ctx context.Context, req *request.CreateFlashSaleRequest) (*entity.FlashSale, error)
+	UpdateFlashSale(ctx context.Context, id uint, req *request.UpdateFlashSaleRequest) error
+	WarmUpFlashSale(ctx context.Context, id uint) error // 预热库存到Redis + 初始化内存标记
+	EndFlashSale(ctx context.Context, id uint) error    // 强制结束秒杀
+	ListAllFlashSales(ctx context.Context) ([]*response.AdminFlashSaleResponse, error)
 
 	// === 用户端操作 ===
-	ListActiveFlashSales() ([]*response.FlashSaleListResponse, error)
-	GetFlashSaleDetail(id uint) (*response.FlashSaleDetailResponse, error)
-	EnterFlashSale(userID uint, req *request.FlashEnterRequest) (*response.FlashEnterResponse, error)
-	SnatchFlashSale(userID uint, req *request.FlashSnatchRequest) (*response.FlashSnatchResponse, error)
-	GetUserFlashOrders(userID uint) ([]*response.FlashOrderResponse, error)
-	GenerateCaptcha() (*captcha.Captcha, error)    // 生成验证码（人机验证）
+	ListActiveFlashSales(ctx context.Context) ([]*response.FlashSaleListResponse, error)
+	GetFlashSaleDetail(ctx context.Context, id uint) (*response.FlashSaleDetailResponse, error)
+	EnterFlashSale(ctx context.Context, userID uint, req *request.FlashEnterRequest) (*response.FlashEnterResponse, error)
+	SnatchFlashSale(ctx context.Context, userID uint, req *request.FlashSnatchRequest) (*response.FlashSnatchResponse, error)
+	GetUserFlashOrders(ctx context.Context, userID uint) ([]*response.FlashOrderResponse, error)
+	GenerateCaptcha(ctx context.Context) (*captcha.Captcha, error) // 生成验证码（人机验证）
 
 	// === 后台定时任务 ===
-	ScanExpiredOrders()                          // 扫描超时未支付订单
-	GuardConsistency()                           // 一致性守护：崩溃恢复 + 库存对账，每5秒执行
-	AutoWarmUp()                                 // 自动预热即将开始的秒杀活动
-	RecoverPendingOrders()                       // 崩溃恢复：启动时单独调用一次
+	ScanExpiredOrders(ctx context.Context)    // 扫描超时未支付订单
+	GuardConsistency(ctx context.Context)     // 一致性守护：崩溃恢复 + 库存对账，每5秒执行
+	AutoWarmUp(ctx context.Context)           // 自动预热即将开始的秒杀活动
+	RecoverPendingOrders(ctx context.Context) // 崩溃恢复：启动时单独调用一次
 
 	// === 注入方法 ===
 	SetUserLimiter(limiter flashlimiter.UserLimiter) // 注入 per-user 限流器
 
 	// === 库存管理器 ===
-	GetInventory() *flashinventory.Inventory
+	GetInventory(ctx context.Context) *flashinventory.Inventory
 }
 
 type flashService struct {
-	db              *gorm.DB
-	cfg             *config.AppConfig
-	flashRepo       mysql.FlashRepository
-	flashCache      redis.FlashCache
-	orderRepo       mysql.OrderRepository
-	orderItemRepo   mysql.OrderItemRepository
-	productRepo     mysql.ProductRepository
-	productCache    redis.ProductCache
-	inventory       *flashinventory.Inventory
-	userLimiter     flashlimiter.UserLimiter // per-user 内存限流器
+	db            *gorm.DB
+	cfg           *config.AppConfig
+	flashRepo     mysql.FlashRepository
+	flashCache    redis.FlashCache
+	orderRepo     mysql.OrderRepository
+	orderItemRepo mysql.OrderItemRepository
+	productRepo   mysql.ProductRepository
+	productCache  redis.ProductCache
+	inventory     *flashinventory.Inventory
+	userLimiter   flashlimiter.UserLimiter // per-user 内存限流器
 }
 
 // NewFlashService 创建秒杀服务实例（供 Wire 注入）
@@ -98,16 +101,16 @@ func (s *flashService) SetUserLimiter(limiter flashlimiter.UserLimiter) {
 }
 
 // GetInventory 返回内存库存管理器（供 Router 和 main.go 访问）
-func (s *flashService) GetInventory() *flashinventory.Inventory {
+func (s *flashService) GetInventory(ctx context.Context) *flashinventory.Inventory {
 	return s.inventory
 }
 
 // ==================== 管理员操作 ====================
 
 // CreateFlashSale 创建秒杀活动
-func (s *flashService) CreateFlashSale(req *request.CreateFlashSaleRequest) (*entity.FlashSale, error) {
+func (s *flashService) CreateFlashSale(ctx context.Context, req *request.CreateFlashSaleRequest) (*entity.FlashSale, error) {
 	// 校验商品是否存在且上架
-	product, err := s.productRepo.GetByID(req.ProductID)
+	product, err := s.productRepo.GetByID(ctx, req.ProductID)
 	if err != nil {
 		return nil, err
 	}
@@ -147,15 +150,15 @@ func (s *flashService) CreateFlashSale(req *request.CreateFlashSaleRequest) (*en
 		Status:     0, // 默认未开始
 	}
 
-	if err := s.flashRepo.Create(flash); err != nil {
+	if err := s.flashRepo.Create(ctx, flash); err != nil {
 		return nil, err
 	}
 	return flash, nil
 }
 
 // UpdateFlashSale 修改秒杀活动（仅允许修改未开始或进行中的活动）
-func (s *flashService) UpdateFlashSale(id uint, req *request.UpdateFlashSaleRequest) error {
-	flash, err := s.flashRepo.GetByID(id)
+func (s *flashService) UpdateFlashSale(ctx context.Context, id uint, req *request.UpdateFlashSaleRequest) error {
+	flash, err := s.flashRepo.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -199,7 +202,7 @@ func (s *flashService) UpdateFlashSale(id uint, req *request.UpdateFlashSaleRequ
 
 	// 修改成功后主动失效活动缓存，防止前端读到过期数据
 	s.flashCache.DeleteFlashInfo(id)
-	if err := s.flashRepo.Update(flash); err != nil {
+	if err := s.flashRepo.Update(ctx, flash); err != nil {
 		return err
 	}
 
@@ -231,8 +234,8 @@ func (s *flashService) UpdateFlashSale(id uint, req *request.UpdateFlashSaleRequ
 }
 
 // WarmUpFlashSale 预热秒杀库存到Redis
-func (s *flashService) WarmUpFlashSale(id uint) error {
-	flash, err := s.flashRepo.GetByID(id)
+func (s *flashService) WarmUpFlashSale(ctx context.Context, id uint) error {
+	flash, err := s.flashRepo.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -277,7 +280,7 @@ func (s *flashService) WarmUpFlashSale(id uint) error {
 
 	// 4. 更新活动状态为进行中（仅在开始时间已到达时切换）
 	if flash.Status == 0 && !time.Now().Before(flash.StartTime) {
-		if err := s.flashRepo.UpdateStatus(id, 1); err != nil {
+		if err := s.flashRepo.UpdateStatus(ctx, id, 1); err != nil {
 			return err
 		}
 	} else if flash.Status == 0 {
@@ -290,8 +293,8 @@ func (s *flashService) WarmUpFlashSale(id uint) error {
 }
 
 // EndFlashSale 强制结束秒杀活动
-func (s *flashService) EndFlashSale(id uint) error {
-	flash, err := s.flashRepo.GetByID(id)
+func (s *flashService) EndFlashSale(ctx context.Context, id uint) error {
+	flash, err := s.flashRepo.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -301,7 +304,7 @@ func (s *flashService) EndFlashSale(id uint) error {
 	}
 
 	// 更新状态为已结束
-	if err := s.flashRepo.UpdateStatus(id, 2); err != nil {
+	if err := s.flashRepo.UpdateStatus(ctx, id, 2); err != nil {
 		return err
 	}
 
@@ -314,8 +317,8 @@ func (s *flashService) EndFlashSale(id uint) error {
 }
 
 // ListAllFlashSales 管理员查看所有秒杀活动
-func (s *flashService) ListAllFlashSales() ([]*response.AdminFlashSaleResponse, error) {
-	list, err := s.flashRepo.ListAll()
+func (s *flashService) ListAllFlashSales(ctx context.Context) ([]*response.AdminFlashSaleResponse, error) {
+	list, err := s.flashRepo.ListAll(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -340,8 +343,8 @@ func (s *flashService) ListAllFlashSales() ([]*response.AdminFlashSaleResponse, 
 // ==================== 用户端操作 ====================
 
 // ListActiveFlashSales 获取进行中的秒杀活动列表
-func (s *flashService) ListActiveFlashSales() ([]*response.FlashSaleListResponse, error) {
-	list, err := s.flashRepo.ListActive()
+func (s *flashService) ListActiveFlashSales(ctx context.Context) ([]*response.FlashSaleListResponse, error) {
+	list, err := s.flashRepo.ListActive(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -371,8 +374,8 @@ func (s *flashService) ListActiveFlashSales() ([]*response.FlashSaleListResponse
 }
 
 // GetFlashSaleDetail 获取秒杀活动详情
-func (s *flashService) GetFlashSaleDetail(id uint) (*response.FlashSaleDetailResponse, error) {
-	flash, err := s.flashRepo.GetByID(id)
+func (s *flashService) GetFlashSaleDetail(ctx context.Context, id uint) (*response.FlashSaleDetailResponse, error) {
+	flash, err := s.flashRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -408,9 +411,9 @@ func (s *flashService) GetFlashSaleDetail(id uint) (*response.FlashSaleDetailRes
 
 // EnterFlashSale 排队入场
 // 核心逻辑：Redis INCR 计数，≤ cap → 允许入场，> cap → 拒绝
-func (s *flashService) EnterFlashSale(userID uint, req *request.FlashEnterRequest) (*response.FlashEnterResponse, error) {
+func (s *flashService) EnterFlashSale(ctx context.Context, userID uint, req *request.FlashEnterRequest) (*response.FlashEnterResponse, error) {
 	// 校验活动有效性
-	flash, err := s.flashRepo.GetByID(req.FlashSaleID)
+	flash, err := s.flashRepo.GetByID(ctx, req.FlashSaleID)
 	if err != nil {
 		return nil, err
 	}
@@ -520,7 +523,7 @@ func (s *flashService) getCooldown() time.Duration {
 
 // SnatchFlashSale 秒杀抢购核心逻辑
 // 流程：验证码 → 限流 → 校验资格 → 内存售罄检查 → Redis Lua原子扣减 → 同步DB写入 → 返回
-func (s *flashService) SnatchFlashSale(userID uint, req *request.FlashSnatchRequest) (*response.FlashSnatchResponse, error) {
+func (s *flashService) SnatchFlashSale(ctx context.Context, userID uint, req *request.FlashSnatchRequest) (*response.FlashSnatchResponse, error) {
 	// 第1层：per-user 限流检查（放在验证码消费之前，避免触发限流时白白浪费验证码）
 	if s.userLimiter != nil && !s.userLimiter.Allow(userID) {
 		return &response.FlashSnatchResponse{Success: false, Message: "操作过于频繁，请稍后再试"}, nil
@@ -536,7 +539,7 @@ func (s *flashService) SnatchFlashSale(userID uint, req *request.FlashSnatchRequ
 	}
 
 	// 校验活动有效性和时间窗口
-	flash, err := s.flashRepo.GetByID(req.FlashSaleID)
+	flash, err := s.flashRepo.GetByID(ctx, req.FlashSaleID)
 	if err != nil {
 		return nil, err
 	}
@@ -578,7 +581,7 @@ func (s *flashService) SnatchFlashSale(userID uint, req *request.FlashSnatchRequ
 	case 1:
 		// 库存不足 → 设置全局 + 本地售罄标记
 		s.flashCache.SetFlashSoldOut(req.FlashSaleID) // Redis 全局（多实例即时可见）
-		s.inventory.SetSoldOut(req.FlashSaleID)        // 本地内存优化（正确设 soldOut=true）
+		s.inventory.SetSoldOut(req.FlashSaleID)       // 本地内存优化（正确设 soldOut=true）
 		return &response.FlashSnatchResponse{Success: false, Message: "秒杀商品已售罄"}, nil
 	case 2:
 		return &response.FlashSnatchResponse{Success: false, Message: "您已参与过该秒杀"}, nil
@@ -598,7 +601,7 @@ func (s *flashService) SnatchFlashSale(userID uint, req *request.FlashSnatchRequ
 	productPrice := flash.FlashPrice
 
 	// 同步写DB
-	err = s.createFlashOrderInDB(flash, userID, orderNo, productPrice)
+	err = s.createFlashOrderInDB(ctx, flash, userID, orderNo, productPrice)
 	if err != nil {
 		// 判断是否为重复下单（UNIQUE约束冲突）—— 此时不应回滚Redis
 		if strings.Contains(err.Error(), "Duplicate") || strings.Contains(err.Error(), "duplicate") {
@@ -606,18 +609,18 @@ func (s *flashService) SnatchFlashSale(userID uint, req *request.FlashSnatchRequ
 			return &response.FlashSnatchResponse{Success: false, Message: "您已参与过该秒杀"}, nil
 		}
 		// 其他DB写入失败 → 回滚Redis
-			log.Printf("❌ 秒杀订单DB写入失败，回滚Redis: userID=%d flashSaleID=%d err=%v", userID, req.FlashSaleID, err)
-			rollbackErr := s.flashCache.RollbackDeduct(req.FlashSaleID, userID)
-			if rollbackErr != nil {
-				// 回滚失败 → 保留 pending，由 RecoverPendingOrders 兜底补偿
-				log.Printf("🚨 回滚Redis失败，保留pending等待补偿: userID=%d flashSaleID=%d rollbackErr=%v", userID, req.FlashSaleID, rollbackErr)
-				return nil, errors.New(errors.CodeServerError, "订单创建失败，请稍后重试")
-			}
-			// 回滚成功 → 正常清理
-			s.flashCache.MarkPendingRolledBack(req.FlashSaleID, userID)
-			s.inventory.Increment(req.FlashSaleID)
-			s.flashCache.DeleteFlashSoldOut(req.FlashSaleID) // 释放库存后清除售罄标记
-			return nil, errors.New(errors.CodeServerError, "订单创建失败，秒杀资格已保留，请重新尝试")
+		log.Printf("❌ 秒杀订单DB写入失败，回滚Redis: userID=%d flashSaleID=%d err=%v", userID, req.FlashSaleID, err)
+		rollbackErr := s.flashCache.RollbackDeduct(req.FlashSaleID, userID)
+		if rollbackErr != nil {
+			// 回滚失败 → 保留 pending，由 RecoverPendingOrders 兜底补偿
+			log.Printf("🚨 回滚Redis失败，保留pending等待补偿: userID=%d flashSaleID=%d rollbackErr=%v", userID, req.FlashSaleID, rollbackErr)
+			return nil, errors.New(errors.CodeServerError, "订单创建失败，请稍后重试")
+		}
+		// 回滚成功 → 正常清理
+		s.flashCache.MarkPendingRolledBack(req.FlashSaleID, userID)
+		s.inventory.Increment(req.FlashSaleID)
+		s.flashCache.DeleteFlashSoldOut(req.FlashSaleID) // 释放库存后清除售罄标记
+		return nil, errors.New(errors.CodeServerError, "订单创建失败，秒杀资格已保留，请重新尝试")
 	}
 
 	// DB写入成功 → 清理防丢失记录
@@ -633,8 +636,8 @@ func (s *flashService) SnatchFlashSale(userID uint, req *request.FlashSnatchRequ
 
 // createFlashOrderInDB 在DB事务中创建秒杀订单
 // 使用命名返回值 err，确保 panic 恢复后调用方能感知到错误
-func (s *flashService) createFlashOrderInDB(flash *entity.FlashSale, userID uint, orderNo string, price float64) (err error) {
-	tx := s.db.Begin()
+func (s *flashService) createFlashOrderInDB(ctx context.Context, flash *entity.FlashSale, userID uint, orderNo string, price float64) (err error) {
+	tx := s.db.WithContext(ctxutil.Or(ctx)).Begin()
 	if tx.Error != nil {
 		return errors.Wrap(tx.Error, "开启事务失败")
 	}
@@ -665,7 +668,7 @@ func (s *flashService) createFlashOrderInDB(flash *entity.FlashSale, userID uint
 		Total:       price,
 		Status:      0, // 待支付
 	}
-	if err := s.orderRepo.WithTx(tx).Create(order); err != nil {
+	if err := s.orderRepo.WithTx(tx).Create(ctx, order); err != nil {
 		// 唯一约束冲突 = 用户已抢过或重复提交，静默回滚 Redis
 		// defer会自动回滚
 		return err
@@ -678,7 +681,7 @@ func (s *flashService) createFlashOrderInDB(flash *entity.FlashSale, userID uint
 		Quantity:  1,
 		Price:     price,
 	}
-	if err := s.orderItemRepo.WithTx(tx).BatchCreate([]*entity.OrderItem{orderItem}); err != nil {
+	if err := s.orderItemRepo.WithTx(tx).BatchCreate(ctx, []*entity.OrderItem{orderItem}); err != nil {
 		// defer会自动回滚
 		return err
 	}
@@ -702,8 +705,8 @@ func (s *flashService) generateOrderNo() string {
 }
 
 // GetUserFlashOrders 获取用户秒杀订单列表（批量查询优化，消除 N+1）
-func (s *flashService) GetUserFlashOrders(userID uint) ([]*response.FlashOrderResponse, error) {
-	orders, err := s.orderRepo.GetByUserID(userID)
+func (s *flashService) GetUserFlashOrders(ctx context.Context, userID uint) ([]*response.FlashOrderResponse, error) {
+	orders, err := s.orderRepo.GetByUserID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -723,7 +726,7 @@ func (s *flashService) GetUserFlashOrders(userID uint) ([]*response.FlashOrderRe
 	}
 
 	// 批量查询订单项（1次 SQL）
-	allItems, err := s.orderItemRepo.GetByOrderIDs(orderIDs)
+	allItems, err := s.orderItemRepo.GetByOrderIDs(ctx, orderIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -741,7 +744,7 @@ func (s *flashService) GetUserFlashOrders(userID uint) ([]*response.FlashOrderRe
 	// 批量查询商品（1次 SQL）
 	productMap := make(map[uint]string, len(productIDs))
 	if len(productIDs) > 0 {
-		products, err := s.productRepo.GetByIDs(productIDs)
+		products, err := s.productRepo.GetByIDs(ctx, productIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -772,7 +775,7 @@ func (s *flashService) GetUserFlashOrders(userID uint) ([]*response.FlashOrderRe
 }
 
 // GenerateCaptcha 生成验证码图片并存储答案到 Redis（2分钟有效）
-func (s *flashService) GenerateCaptcha() (*captcha.Captcha, error) {
+func (s *flashService) GenerateCaptcha(ctx context.Context) (*captcha.Captcha, error) {
 	c, err := captcha.Generate()
 	if err != nil {
 		return nil, errors.Wrap(err, "验证码生成失败")
@@ -786,12 +789,12 @@ func (s *flashService) GenerateCaptcha() (*captcha.Captcha, error) {
 // ==================== 定时任务 ====================
 
 // AutoWarmUp 自动预热即将开始的秒杀活动（未来30秒内开始的未预热活动）
-func (s *flashService) AutoWarmUp() {
+func (s *flashService) AutoWarmUp(ctx context.Context) {
 	var upcoming []entity.FlashSale
 	now := time.Now()
 	window := now.Add(30 * time.Second)
 
-	s.db.Where("status = 0 AND start_time <= ? AND start_time >= ?", window, now.Add(-10*time.Second)).
+	s.db.WithContext(ctxutil.Or(ctx)).Where("status = 0 AND start_time <= ? AND start_time >= ?", window, now.Add(-10*time.Second)).
 		Find(&upcoming)
 
 	if len(upcoming) > 0 {
@@ -800,7 +803,7 @@ func (s *flashService) AutoWarmUp() {
 
 	for _, f := range upcoming {
 		log.Printf("🔥 自动预热秒杀活动: id=%d product_id=%d stock=%d", f.ID, f.ProductID, f.FlashStock)
-		if err := s.WarmUpFlashSale(f.ID); err != nil {
+		if err := s.WarmUpFlashSale(ctx, f.ID); err != nil {
 			log.Printf("⚠️ 自动预热失败: id=%d err=%v", f.ID, err)
 		}
 	}
@@ -811,7 +814,7 @@ var scanMutex sync.Mutex
 
 // ScanExpiredOrders 扫描超时未支付的秒杀订单
 // 每30秒执行一次（由 main.go 中的 goroutine 驱动）
-func (s *flashService) ScanExpiredOrders() {
+func (s *flashService) ScanExpiredOrders(ctx context.Context) {
 	scanMutex.Lock()
 	defer scanMutex.Unlock()
 
@@ -820,14 +823,14 @@ func (s *flashService) ScanExpiredOrders() {
 
 	// === 第1步：将超时订单标记为"待释放"（status: 0→3），分批处理防止OOM ===
 	var expiredOrders []entity.Order
-	s.db.Model(&entity.Order{}).
+	s.db.WithContext(ctxutil.Or(ctx)).Model(&entity.Order{}).
 		Where("flash_sale_id IS NOT NULL AND status = 0 AND created_at < ?", timeoutThreshold).
 		Limit(1000).
 		Find(&expiredOrders)
 
 	for _, o := range expiredOrders {
 		// 条件UPDATE：仅在 status=0 时更新为3（防支付回调竞态）
-		result := s.db.Model(&entity.Order{}).
+		result := s.db.WithContext(ctxutil.Or(ctx)).Model(&entity.Order{}).
 			Where("id = ? AND status = 0", o.ID).
 			Update("status", 3)
 
@@ -840,14 +843,14 @@ func (s *flashService) ScanExpiredOrders() {
 
 	// === 第2步：处理冷却期满的订单（status: 3→2，释放库存），分批处理 ===
 	var coolingOrders []entity.Order
-	s.db.Model(&entity.Order{}).
+	s.db.WithContext(ctxutil.Or(ctx)).Model(&entity.Order{}).
 		Where("flash_sale_id IS NOT NULL AND status = 3 AND updated_at < ?", cooldownThreshold).
 		Limit(1000).
 		Find(&coolingOrders)
 
 	for _, o := range coolingOrders {
 		// 条件UPDATE：仅在 status=3 时更新为2（冷却期内支付了则不释放）
-		result := s.db.Model(&entity.Order{}).
+		result := s.db.WithContext(ctxutil.Or(ctx)).Model(&entity.Order{}).
 			Where("id = ? AND status = 3", o.ID).
 			Update("status", 2)
 
@@ -886,16 +889,16 @@ func (s *flashService) ScanExpiredOrders() {
 // RecoverPendingOrders 崩溃恢复：扫描Redis中的防丢失记录，补建丢失的DB订单
 // GuardConsistency 一致性守护：崩溃恢复 + 库存对账 + 幽灵用户检测 + 售罄标记校验
 // 每5秒由 main.go 定时触发
-func (s *flashService) GuardConsistency() {
-	s.RecoverPendingOrders()
-	s.ReconcileStock()
-	s.purgeGhostPurchasers()   // 抽样清理已购集合中的幽灵用户
-	s.healSoldOutFlag()        // 校验售罄标记与真实库存的一致性
+func (s *flashService) GuardConsistency(ctx context.Context) {
+	s.RecoverPendingOrders(ctx)
+	s.ReconcileStock(ctx)
+	s.purgeGhostPurchasers(ctx) // 抽样清理已购集合中的幽灵用户
+	s.healSoldOutFlag(ctx)      // 校验售罄标记与真实库存的一致性
 }
 
 // purgeGhostPurchasers 从已购集合随机抽取用户，比对DB订单，移除无订单的幽灵用户
-func (s *flashService) purgeGhostPurchasers() {
-	flashes, err := s.flashRepo.ListActive()
+func (s *flashService) purgeGhostPurchasers(ctx context.Context) {
+	flashes, err := s.flashRepo.ListActive(ctx)
 	if err != nil {
 		return
 	}
@@ -912,7 +915,7 @@ func (s *flashService) purgeGhostPurchasers() {
 			}
 			// 检查 DB 中是否有该用户的已支付或待支付秒杀订单
 			var count int64
-			s.db.Model(&entity.Order{}).
+			s.db.WithContext(ctxutil.Or(ctx)).Model(&entity.Order{}).
 				Where("user_id = ? AND flash_sale_id = ? AND status IN (0, 1, 3)", uid, f.ID).
 				Count(&count)
 			if count == 0 {
@@ -925,8 +928,8 @@ func (s *flashService) purgeGhostPurchasers() {
 }
 
 // healSoldOutFlag 校验售罄标记：Redis 有库存但标记仍为售罄 → 删除标记
-func (s *flashService) healSoldOutFlag() {
-	flashes, err := s.flashRepo.ListActive()
+func (s *flashService) healSoldOutFlag(ctx context.Context) {
+	flashes, err := s.flashRepo.ListActive(ctx)
 	if err != nil {
 		return
 	}
@@ -947,7 +950,7 @@ func (s *flashService) healSoldOutFlag() {
 
 // RecoverPendingOrders 崩溃恢复：扫描防丢失记录和已购追踪列表，补建丢失订单
 // 在 main.go 启动时调用
-func (s *flashService) RecoverPendingOrders() {
+func (s *flashService) RecoverPendingOrders(ctx context.Context) {
 	log.Println("🔍 开始扫描秒杀防丢失记录...")
 
 	keys, err := s.flashCache.ScanAllPendingKeys()
@@ -984,7 +987,7 @@ func (s *flashService) RecoverPendingOrders() {
 				}
 
 				// 检查DB中是否已存在该订单
-				existing, err := s.orderRepo.GetByOrderNo(orderNo)
+				existing, err := s.orderRepo.GetByOrderNo(ctx, orderNo)
 				if err == nil && existing != nil {
 					s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
 					log.Printf("  ✓ 订单已存在于DB，清理Redis: orderNo=%s", orderNo)
@@ -992,7 +995,7 @@ func (s *flashService) RecoverPendingOrders() {
 				}
 
 				// DB中不存在 → 补建订单（仅 confirmed 状态）
-				flash, err := s.flashRepo.GetByID(flashSaleID)
+				flash, err := s.flashRepo.GetByID(ctx, flashSaleID)
 				if err != nil {
 					s.flashCache.RollbackDeduct(flashSaleID, uint(userID))
 					s.flashCache.RemovePendingOrder(flashSaleID, uint(userID))
@@ -1001,7 +1004,7 @@ func (s *flashService) RecoverPendingOrders() {
 					continue
 				}
 
-				err = s.createFlashOrderInDB(flash, uint(userID), orderNo, flash.FlashPrice)
+				err = s.createFlashOrderInDB(ctx, flash, uint(userID), orderNo, flash.FlashPrice)
 				if err != nil {
 					log.Printf("  ⚠ 补建订单失败（回滚Redis）: orderNo=%s err=%v", orderNo, err)
 					s.flashCache.RollbackDeduct(flashSaleID, uint(userID))
@@ -1021,7 +1024,7 @@ func (s *flashService) RecoverPendingOrders() {
 	// === 第二阶段：扫描 deduct track 列表，修复场景A ===
 	// 在 Lua 扣减成功后、SetPendingOrder 之前崩溃的用户，
 	// 他们在 Redis 已购集合中但没有 pending 记录也没有 DB 订单
-	activeFlashes, err := s.flashRepo.ListActive()
+	activeFlashes, err := s.flashRepo.ListActive(ctx)
 	if err != nil {
 		log.Printf("⚠️ 获取活动列表失败，跳过 deduct track 扫描: %v", err)
 		return
@@ -1043,7 +1046,7 @@ func (s *flashService) RecoverPendingOrders() {
 			}
 			// 检查 DB 中是否已有该用户的秒杀订单
 			var count int64
-			s.db.Model(&entity.Order{}).
+			s.db.WithContext(ctxutil.Or(ctx)).Model(&entity.Order{}).
 				Where("user_id = ? AND flash_sale_id = ? AND status IN (0, 1, 3)", uid, f.ID).
 				Count(&count)
 			if count > 0 {
@@ -1051,7 +1054,7 @@ func (s *flashService) RecoverPendingOrders() {
 			}
 			// 用户已在 Redis 已购集合中但无订单 → 补建
 			orderNo := s.generateOrderNo()
-			err = s.createFlashOrderInDB(f, uint(uid), orderNo, f.FlashPrice)
+			err = s.createFlashOrderInDB(ctx, f, uint(uid), orderNo, f.FlashPrice)
 			if err != nil {
 				log.Printf("  ⚠ deduct track 补建失败（回滚Redis）: flashSaleID=%d userID=%d err=%v", f.ID, uid, err)
 				s.flashCache.RollbackDeduct(f.ID, uint(uid))
@@ -1077,9 +1080,9 @@ func parsePendingValue(raw string) (orderNo, status string) {
 
 // ReconcileStock 对账任务：比较 Redis 扣减数与 DB 订单数，发现不一致则告警
 // 每小时执行一次（由 main.go 中的 goroutine 驱动）
-func (s *flashService) ReconcileStock() {
+func (s *flashService) ReconcileStock(ctx context.Context) {
 	// 获取所有进行中的秒杀活动
-	flashes, err := s.flashRepo.ListActive()
+	flashes, err := s.flashRepo.ListActive(ctx)
 	if err != nil {
 		log.Printf("⚠️ 对账-查询活动列表失败: %v", err)
 		return
@@ -1096,27 +1099,27 @@ func (s *flashService) ReconcileStock() {
 
 		// DB 成功订单数
 		var dbSold int64
-		s.db.Model(&entity.Order{}).
+		s.db.WithContext(ctxutil.Or(ctx)).Model(&entity.Order{}).
 			Where("flash_sale_id = ? AND status IN (0, 1, 3)", f.ID).
 			Count(&dbSold)
 
-	// 自动修复：Redis 还有货但本地内存误标售罄 → 重置
-	if redisRemaining > 0 && s.inventory.IsSoldOut(f.ID) {
-		s.inventory.ResetSoldOut(f.ID)
-		log.Printf("🔧 自愈-活动%d: 本地售罄标记已重置（Redis剩余=%d）", f.ID, redisRemaining)
-	}
-
-	// 特殊处理：Redis 返回剩余=0 但 DB 也无订单 → 可能 Key 根本不存在（从未预热）
-	// GetRemainingStock 对"Key 不存在"和"库存为0"都返回0，需通过 EXISTS 区分
-	if redisRemaining == 0 && dbSold == 0 {
-		exists, existsErr := s.flashCache.StockKeyExists(f.ID)
-		if existsErr == nil && !exists {
-			log.Printf("⚠️ 活动%d: Redis库存Key不存在且DB无订单，跳过对账（活动可能从未预热或Redis数据丢失）", f.ID)
-			continue
+		// 自动修复：Redis 还有货但本地内存误标售罄 → 重置
+		if redisRemaining > 0 && s.inventory.IsSoldOut(f.ID) {
+			s.inventory.ResetSoldOut(f.ID)
+			log.Printf("🔧 自愈-活动%d: 本地售罄标记已重置（Redis剩余=%d）", f.ID, redisRemaining)
 		}
-	}
 
-	if redisSold != dbSold {
+		// 特殊处理：Redis 返回剩余=0 但 DB 也无订单 → 可能 Key 根本不存在（从未预热）
+		// GetRemainingStock 对"Key 不存在"和"库存为0"都返回0，需通过 EXISTS 区分
+		if redisRemaining == 0 && dbSold == 0 {
+			exists, existsErr := s.flashCache.StockKeyExists(f.ID)
+			if existsErr == nil && !exists {
+				log.Printf("⚠️ 活动%d: Redis库存Key不存在且DB无订单，跳过对账（活动可能从未预热或Redis数据丢失）", f.ID)
+				continue
+			}
+		}
+
+		if redisSold != dbSold {
 			deviation := redisSold - dbSold
 			log.Printf("🚨 对账异常！活动%d: Redis已售=%d DB已售=%d 偏差=%d", f.ID, redisSold, dbSold, deviation)
 
